@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 import tempfile
@@ -2230,6 +2231,33 @@ class TestRuntimeBugfixes(unittest.TestCase):
             mock_embed.assert_called_once()
             _, embed_kw = mock_embed.call_args
             self.assertEqual(embed_kw.get("blur_region"), blur_regions)
+
+    def test_capcap_spec_does_not_exclude_msgpack(self):
+        spec_path = Path(PROJECT_ROOT) / "CapCap.spec"
+        self.assertTrue(spec_path.is_file(), f"CapCap.spec must exist at {spec_path}")
+        spec_text = spec_path.read_text(encoding="utf-8")
+        spec_tree = ast.parse(spec_text)
+
+        excludes_items = []
+        for node in spec_tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "excludes":
+                        if isinstance(node.value, ast.List):
+                            excludes_items = [
+                                elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)
+                            ]
+
+        self.assertNotIn("msgpack", excludes_items, "'msgpack' must not be in excludes in CapCap.spec")
+
+        hiddenimports_items = []
+        for node in ast.walk(spec_tree):
+            if isinstance(node, ast.keyword) and node.arg == "hiddenimports":
+                for sub in ast.walk(node.value):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        hiddenimports_items.append(sub.value)
+
+        self.assertIn("msgpack", hiddenimports_items, "'msgpack' must be in hiddenimports in CapCap.spec")
 
 
 if __name__ == "__main__":
