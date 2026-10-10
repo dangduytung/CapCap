@@ -3136,19 +3136,6 @@ class VideoTranslatorGUI(QMainWindow):
                 duration = int(tl_dur or 0)
             except Exception:
                 duration = 0
-        if duration <= 0:
-            try:
-                v_path = self._resolve_preview_original_video_path()
-                if v_path and os.path.exists(v_path):
-                    try:
-                        from app.video_processor import get_video_duration
-                    except ImportError:
-                        from video_processor import get_video_duration
-                    vd = get_video_duration(v_path)
-                    if vd and vd > 0:
-                        duration = int(vd * 1000)
-            except Exception:
-                pass
         return max(0, duration)
 
     def _refresh_music_layer_summary(self):

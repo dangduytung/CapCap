@@ -2485,25 +2485,13 @@ class TestRuntimeBugfixes(unittest.TestCase):
         dur = VideoTranslatorGUI._audio_total_duration_ms(mock_gui)
         self.assertEqual(dur, 8000)
 
-        # 4. Player duration 0, timeline duration 0, falls back to get_video_duration from video file
+        # 4. Player duration 0, timeline duration 0 -> returns 0 without blocking FFprobe
         mock_gui.timeline.duration = 0
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tf:
-            tf.write(b"dummy")
-            temp_path = tf.name
-
-        try:
-            mock_gui._resolve_preview_original_video_path.return_value = temp_path
-            with patch("app.video_processor.get_video_duration", return_value=12.34):
-                dur = VideoTranslatorGUI._audio_total_duration_ms(mock_gui)
-                self.assertEqual(dur, 12340)
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-        # 5. All fail -> returns 0
-        mock_gui._resolve_preview_original_video_path.return_value = ""
-        dur = VideoTranslatorGUI._audio_total_duration_ms(mock_gui)
-        self.assertEqual(dur, 0)
+        mock_gui._resolve_preview_original_video_path.return_value = "dummy.mp4"
+        with patch("app.video_processor.get_video_duration") as mock_get_dur:
+            dur = VideoTranslatorGUI._audio_total_duration_ms(mock_gui)
+            self.assertEqual(dur, 0)
+            mock_get_dur.assert_not_called()
 
     def test_is_native_audio_requires_active(self):
         from unittest.mock import MagicMock
