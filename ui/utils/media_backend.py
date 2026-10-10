@@ -1724,10 +1724,16 @@ class MpvMediaPlayerBackend(QObject):
                 except Exception:
                     pass
 
-            if v_paused:
-                self._native_audio_engine.pause()
-            else:
-                self._native_audio_engine.play()
+            # Only slave native audio play/pause state to MPV when the user
+            # has already started playback (backend _state == PlayingState).
+            # Emitting pause() when video is in an initial paused/loaded state
+            # floods the cross-thread signal queue with stale pause() calls that
+            # then override any subsequent play() call, silencing audio entirely.
+            if self._state == QMediaPlayer.PlayingState:
+                if v_paused:
+                    self._native_audio_engine.pause()
+                else:
+                    self._native_audio_engine.play()
 
             a_pos = self._native_audio_engine.timeline_position_ms()
             warps = getattr(self, "_video_time_warps", [])
@@ -1738,7 +1744,9 @@ class MpvMediaPlayerBackend(QObject):
                 expected_a_pos_ms = v_pos_ms
 
             threshold_ms = 300
-            if abs(expected_a_pos_ms - a_pos) > threshold_ms:
+            drift = abs(expected_a_pos_ms - a_pos)
+            self.log(f"[AudioSync] _sync_audio_to_video: state={self._state}, v_paused={v_paused}, v_pos={v_pos_ms}, a_pos={a_pos}, drift={drift}, seek={'YES' if drift > threshold_ms else 'NO'}")
+            if self._state == QMediaPlayer.PlayingState and drift > threshold_ms:
                 self._native_audio_engine.seek(expected_a_pos_ms)
             return
 
