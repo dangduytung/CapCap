@@ -143,6 +143,14 @@ class _PreviewAudioWorker(QObject):
     def _timeline_pos_ms(self, val: Any) -> None:
         self._timeline_pos_exact_ms = float(val)
 
+    def _is_device_valid(self) -> bool:
+        if getattr(self, "_io_device", None) is None:
+            return False
+        try:
+            return bool(self._io_device.isOpen())
+        except Exception:
+            return False
+
     @Slot()
     def init_sink(self) -> None:
         """Initialize QAudioSink with default audio output device format."""
@@ -287,8 +295,7 @@ class _PreviewAudioWorker(QObject):
         self._sink_resampler = None
         if self._sink:
             self._sink.reset()
-            if self._is_playing:
-                self._io_device = self._sink.start()
+            self._io_device = self._sink.start() if self._is_playing else None
         self.positionChanged.emit(self._timeline_pos_ms)
 
     @Slot()
@@ -296,8 +303,11 @@ class _PreviewAudioWorker(QObject):
         """Start audio playback."""
         if not self._is_playing:
             self._is_playing = True
-            if self._sink and (self._sink.state() == QAudio.StoppedState or self._io_device is None or self._sink.bytesFree() <= 0):
-                self._io_device = self._sink.start()
+            if self._sink and (not self._is_device_valid() or self._sink.state() == QAudio.StoppedState or self._io_device is None):
+                try:
+                    self._io_device = self._sink.start()
+                except Exception:
+                    self._io_device = None
             if self._timer and not self._timer.isActive():
                 self._timer.start()
             self.stateChanged.emit(1)
@@ -478,7 +488,15 @@ class _PreviewAudioWorker(QObject):
 
     def _on_timer_tick(self) -> None:
         """Mix and push PCM audio blocks to the sink."""
-        if not self._is_playing or self._io_device is None or self._sink is None:
+        if not self._is_playing or self._sink is None:
+            return
+        if not self._is_device_valid():
+            try:
+                self._io_device = self._sink.start()
+            except Exception:
+                self._io_device = None
+                return
+        if self._io_device is None:
             return
 
         bytes_per_sample = 4 if self._sink_is_float else 2
@@ -486,7 +504,14 @@ class _PreviewAudioWorker(QObject):
 
         # 1. Flush any pending leftover bytes from previous tick first
         if self._pending_write_bytes:
-            bytes_written = self._io_device.write(self._pending_write_bytes)
+            try:
+                bytes_written = self._io_device.write(self._pending_write_bytes)
+            except Exception:
+                try:
+                    self._io_device = self._sink.start()
+                    bytes_written = self._io_device.write(self._pending_write_bytes) if self._io_device else 0
+                except Exception:
+                    bytes_written = 0
             if bytes_written > 0:
                 frames_written = bytes_written // bytes_per_frame
                 ms_written = frames_written * 1000.0 / self._sink_sr
@@ -605,7 +630,14 @@ class _PreviewAudioWorker(QObject):
                 data_bytes = (out_audio * 32767.0).clip(-32768.0, 32767.0).astype(np.int16).tobytes()
 
             # 6. Push to sink and advance clock only by actual written bytes
-            bytes_written = self._io_device.write(data_bytes)
+            try:
+                bytes_written = self._io_device.write(data_bytes)
+            except Exception:
+                try:
+                    self._io_device = self._sink.start()
+                    bytes_written = self._io_device.write(data_bytes) if self._io_device else 0
+                except Exception:
+                    bytes_written = 0
             if bytes_written > 0:
                 frames_written = bytes_written // bytes_per_frame
                 ms_written = frames_written * 1000.0 / self._sink_sr

@@ -1789,19 +1789,19 @@ class PreviewController:
             else:
                 self.gui.sync_live_subtitle_preview()
 
-            # MPV runs with ao=null (video-only). When setSource() loaded preview_path above,
-            # it reset native_audio_engine's tracks to empty. Re-sync all active preview
-            # audio tracks (A1 Audio, TS1, Music) with full gain/mute settings!
-            self.gui.sync_preview_audio_track_to_output(apply_to_player=True, force=True)
-            if getattr(self.gui, "_play_video_filter_preview_when_ready", False):
-                self.gui._play_video_filter_preview_when_ready = False
-                self.gui.media_player.play()
-                self.gui.timeline.set_playing(True)
-
         if bool(getattr(self.gui, "_pipeline_active", False)) and str(getattr(self.gui, "_pipeline_step", "") or "").strip().lower() == "preview":
             self.gui.pipeline_controller.pipeline_advance("preview")
             self.gui.apply_segments_to_timeline()
             self.gui.refresh_ui_state()
+
+        # MPV runs with ao=null (video-only). When setSource() loaded preview_path above,
+        # it reset native_audio_engine's tracks to empty. Re-sync all active preview
+        # audio tracks (A1 Audio, TS1, Music) with full gain/mute settings!
+        self.gui.sync_preview_audio_track_to_output(apply_to_player=True, force=True)
+        if getattr(self.gui, "_play_video_filter_preview_when_ready", False):
+            self.gui._play_video_filter_preview_when_ready = False
+            self.gui.media_player.play()
+            self.gui.timeline.set_playing(True)
 
         if getattr(self.gui, "_pending_video_filter_preview", False):
             QTimer.singleShot(0, self.gui.run_live_video_filter_preview)

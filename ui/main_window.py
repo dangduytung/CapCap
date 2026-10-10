@@ -3129,9 +3129,26 @@ class VideoTranslatorGUI(QMainWindow):
             duration = 0
         if duration <= 0:
             try:
-                duration = int(getattr(self.timeline, "duration", 0) or 0)
+                tl = getattr(self, "timeline", None)
+                tl_dur = getattr(tl, "duration", 0)
+                if callable(tl_dur):
+                    tl_dur = tl_dur()
+                duration = int(tl_dur or 0)
             except Exception:
                 duration = 0
+        if duration <= 0:
+            try:
+                v_path = self._resolve_preview_original_video_path()
+                if v_path and os.path.exists(v_path):
+                    try:
+                        from app.video_processor import get_video_duration
+                    except ImportError:
+                        from video_processor import get_video_duration
+                    vd = get_video_duration(v_path)
+                    if vd and vd > 0:
+                        duration = int(vd * 1000)
+            except Exception:
+                pass
         return max(0, duration)
 
     def _refresh_music_layer_summary(self):
@@ -3536,7 +3553,7 @@ class VideoTranslatorGUI(QMainWindow):
         # attempt a TTS+Music mix and report "No active audio tracks".
         is_native_audio = bool(
             getattr(self.media_player, "_native_audio_active", False)
-            or getattr(self.media_player, "_native_audio_engine", None) is not None
+            and getattr(self.media_player, "_native_audio_engine", None) is not None
         )
         preferred_mode = self._preferred_preview_audio_track_mode()
         selected_mode = str(getattr(self, "_preview_audio_track_mode", "") or preferred_mode).strip().lower()
@@ -14327,6 +14344,14 @@ class VideoTranslatorGUI(QMainWindow):
         self.timeline.set_segments(segs if segs else [])
         if hasattr(self, "video_time_warps") and hasattr(self.timeline, "set_video_time_warps"):
             self.timeline.set_video_time_warps(self.video_time_warps)
+        if hasattr(self, "timeline") and hasattr(self.timeline, "sync_tts_track"):
+            voice_path = (
+                getattr(self, "last_voice_vi_path", "")
+                or getattr(self, "processed_artifacts", {}).get("voice_vi", "")
+                or (getattr(self.current_project_state, "artifacts", {}).get("voice_vi", "") if getattr(self, "current_project_state", None) else "")
+            )
+            if voice_path and os.path.exists(voice_path):
+                self.timeline.sync_tts_track(voice_path, segments=segs)
         self.schedule_timeline_visual_refresh(waveform=True, thumbnails=True)
         # Configure the Qt subtitle overlay before showing its drag target.
         # Otherwise it can briefly use the default size until the first drag.

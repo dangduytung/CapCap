@@ -2461,6 +2461,165 @@ class TestRuntimeBugfixes(unittest.TestCase):
         self.assertEqual(gui.current_translated_segments[0]["voice_speed"], 1.3)
         self.assertTrue(gui.current_translated_segments[0]["_auto_fit_applied"])
 
+    def test_audio_total_duration_ms_callable_and_fallback(self):
+        from unittest.mock import MagicMock, patch
+        from ui.main_window import VideoTranslatorGUI
+
+        mock_gui = MagicMock()
+
+        # 1. Player duration > 0 -> uses player duration
+        mock_gui.media_player.duration.return_value = 10000
+        dur = VideoTranslatorGUI._audio_total_duration_ms(mock_gui)
+        self.assertEqual(dur, 10000)
+
+        # 2. Player duration <= 0, timeline.duration is callable returning 8500
+        mock_gui.media_player.duration.return_value = 0
+        mock_gui.timeline = MagicMock()
+        mock_gui.timeline.duration = MagicMock(return_value=8500)
+        dur = VideoTranslatorGUI._audio_total_duration_ms(mock_gui)
+        mock_gui.timeline.duration.assert_called_once()
+        self.assertEqual(dur, 8500)
+
+        # 3. Player duration <= 0, timeline.duration is int property (8000)
+        mock_gui.timeline.duration = 8000
+        dur = VideoTranslatorGUI._audio_total_duration_ms(mock_gui)
+        self.assertEqual(dur, 8000)
+
+        # 4. Player duration 0, timeline duration 0, falls back to get_video_duration from video file
+        mock_gui.timeline.duration = 0
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tf:
+            tf.write(b"dummy")
+            temp_path = tf.name
+
+        try:
+            mock_gui._resolve_preview_original_video_path.return_value = temp_path
+            with patch("app.video_processor.get_video_duration", return_value=12.34):
+                dur = VideoTranslatorGUI._audio_total_duration_ms(mock_gui)
+                self.assertEqual(dur, 12340)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+        # 5. All fail -> returns 0
+        mock_gui._resolve_preview_original_video_path.return_value = ""
+        dur = VideoTranslatorGUI._audio_total_duration_ms(mock_gui)
+        self.assertEqual(dur, 0)
+
+    def test_is_native_audio_requires_active(self):
+        from unittest.mock import MagicMock
+        from ui.main_window import VideoTranslatorGUI
+
+        mock_gui = MagicMock()
+        mock_gui._preview_audio_track_switching = False
+        mock_gui._resolve_preview_original_video_path.return_value = "dummy.mp4"
+        mock_gui._preferred_preview_audio_track_mode.return_value = "dubbed"
+        mock_gui._preview_audio_track_mode = "dubbed"
+        mock_gui._resolve_preview_dubbed_playback_source.return_value = ("dubbed", "dubbed.wav")
+        mock_gui._resolve_preview_original_audio_path.return_value = "orig.wav"
+        mock_gui.media_player.position.return_value = 0
+        mock_gui.media_player.is_playing.return_value = False
+
+        # When _native_audio_active is False, even if _native_audio_engine is not None,
+        # is_native_audio must be False (not locked into native mode)!
+        mock_gui.media_player._native_audio_active = False
+        mock_gui.media_player._native_audio_engine = MagicMock()
+
+        VideoTranslatorGUI._apply_preview_audio_track_selection(mock_gui)
+        mock_gui._resolve_preview_dubbed_playback_source.assert_called_once()
+
+        # When _native_audio_active is True and _native_audio_engine is present,
+        # is_native_audio is True (native mode)
+        mock_gui.reset_mock()
+        mock_gui._preview_audio_track_switching = False
+        mock_gui._resolve_preview_original_video_path.return_value = "dummy.mp4"
+        mock_gui._preferred_preview_audio_track_mode.return_value = "dubbed"
+        mock_gui._preview_audio_track_mode = "dubbed"
+        mock_gui.media_player._native_audio_active = True
+        mock_gui.media_player._native_audio_engine = MagicMock()
+        mock_gui.media_player.position.return_value = 0
+        mock_gui.media_player.is_playing.return_value = False
+
+        VideoTranslatorGUI._apply_preview_audio_track_selection(mock_gui)
+        mock_gui._resolve_preview_dubbed_playback_source.assert_not_called()
+
+    def test_preview_worker_seek_clears_io_device_when_paused(self):
+        from unittest.mock import MagicMock
+        from ui.utils.preview_audio import _PreviewAudioWorker
+
+        worker = _PreviewAudioWorker(sample_rate=16000, block_size=160)
+        mock_sink = MagicMock()
+        mock_sink.start.return_value = MagicMock()
+        worker._sink = mock_sink
+        worker._io_device = MagicMock()
+        worker._is_playing = False
+
+        # When paused, seek(0) resets sink and clears _io_device to None
+        worker.seek(0)
+        self.assertIsNone(worker._io_device)
+        mock_sink.reset.assert_called_once()
+
+        # Subsequent play() starts the sink device without error
+        worker.play()
+        self.assertTrue(worker._is_playing)
+        self.assertIsNotNone(worker._io_device)
+        mock_sink.start.assert_called_once()
+
+    def test_apply_segments_to_timeline_syncs_tts_track(self):
+        from unittest.mock import MagicMock
+        from ui.main_window import VideoTranslatorGUI
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+            tf.write(b"RIFF dummy")
+            voice_wav = tf.name
+
+        try:
+            mock_gui = MagicMock()
+            mock_gui.get_active_segments.return_value = [{"start": 0.0, "end": 2.0, "text": "Hello"}]
+            mock_gui.current_translated_segments = None
+            mock_gui.timeline = MagicMock()
+            mock_gui.last_voice_vi_path = voice_wav
+
+            VideoTranslatorGUI.apply_segments_to_timeline(mock_gui)
+
+            mock_gui.timeline.sync_tts_track.assert_called_once_with(
+                voice_wav,
+                segments=[{"start": 0.0, "end": 2.0, "text": "Hello"}],
+            )
+        finally:
+            if os.path.exists(voice_wav):
+                os.remove(voice_wav)
+
+    def test_on_preview_ready_order_of_operations(self):
+        from unittest.mock import MagicMock
+        from ui.controllers.preview_controller import PreviewController
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            preview_video = os.path.join(tmpdir, "preview.mp4")
+            with open(preview_video, "wb") as f:
+                f.write(b"dummy")
+
+            mock_gui = MagicMock()
+            mock_gui.processed_artifacts = {}
+            mock_gui.last_voice_vi_path = ""
+            mock_gui.last_mixed_vi_path = ""
+            mock_gui.video_time_warps = []
+            mock_gui._preview_video_has_burned_subtitles = False
+            mock_gui._pipeline_active = True
+            mock_gui._pipeline_step = "preview"
+
+            call_order = []
+            mock_gui.pipeline_controller.pipeline_advance.side_effect = lambda step: call_order.append(f"advance_{step}")
+            mock_gui.apply_segments_to_timeline.side_effect = lambda: call_order.append("apply_segments")
+            mock_gui.sync_preview_audio_track_to_output.side_effect = lambda **kw: call_order.append("sync_audio")
+
+            controller = PreviewController(mock_gui)
+            controller.on_preview_ready(preview_video, None)
+
+            # apply_segments must be called before sync_audio
+            self.assertIn("apply_segments", call_order)
+            self.assertIn("sync_audio", call_order)
+            self.assertLess(call_order.index("apply_segments"), call_order.index("sync_audio"))
+
 
 if __name__ == "__main__":
     unittest.main()
