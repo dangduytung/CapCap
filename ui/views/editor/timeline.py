@@ -75,6 +75,7 @@ class EditorTimeline(QGraphicsView):
         self._duration_explicit = False
         self._base_video_duration = 0.0
         self._playhead = 0.0
+        self._last_playhead_px = None
         self._selection_range: tuple[float, float] | None = None
         self._selection_drag = None
         self._selection_mode = False
@@ -570,7 +571,12 @@ class EditorTimeline(QGraphicsView):
         self._follow_playhead_during_playback()
         viewport = self.viewport()
         if viewport:
-            viewport.update()
+            scroll_x = self.horizontalScrollBar().value() if self.horizontalScrollBar() else 0
+            cur_px = self.CONTENT_LEFT_PAD + int(round(seconds * self.pixels_per_second)) - scroll_x
+            last_px = getattr(self, "_last_playhead_px", None)
+            if not getattr(self, "_playing", False) or last_px is None or cur_px != last_px:
+                self._last_playhead_px = cur_px
+                viewport.update()
         self.playheadMoved.emit(seconds)
 
     def selection_range(self):

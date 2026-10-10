@@ -1862,7 +1862,7 @@ class TestRuntimeBugfixes(unittest.TestCase):
             mock_gui.sync_preview_audio_track_to_output.assert_called_once_with(apply_to_player=True, force=True)
             mock_gui._pipeline_advance.assert_called_once_with("voiceover")
 
-    def test_on_preview_ready_reattaches_audio_tracks(self):
+    def test_on_preview_ready_syncs_preview_audio_track(self):
         from unittest.mock import MagicMock
         from ui.controllers.preview_controller import PreviewController
 
@@ -1870,15 +1870,11 @@ class TestRuntimeBugfixes(unittest.TestCase):
             preview_video = os.path.join(tmpdir, "preview.mp4")
             with open(preview_video, "wb") as f:
                 f.write(b"fake_mp4_data")
-            voice_audio = os.path.join(tmpdir, "voice.wav")
-            with open(voice_audio, "wb") as f:
-                f.write(b"fake_wav_data")
 
             mock_gui = MagicMock()
             mock_gui.processed_artifacts = {}
-            mock_gui.last_voice_vi_path = voice_audio
+            mock_gui.last_voice_vi_path = ""
             mock_gui.last_mixed_vi_path = ""
-            mock_gui._audio_total_duration_ms.return_value = 5000.0
             mock_gui.video_time_warps = []
             mock_gui._preview_video_has_burned_subtitles = False
             mock_gui._pipeline_active = False
@@ -1886,16 +1882,9 @@ class TestRuntimeBugfixes(unittest.TestCase):
             controller = PreviewController(mock_gui)
             controller.on_preview_ready(preview_video, None)
 
-            # Verify set_audio_tracks_snapshot was called with the re-attached audio
-            mock_gui.media_player.set_audio_tracks_snapshot.assert_called_once()
-            args, _ = mock_gui.media_player.set_audio_tracks_snapshot.call_args
-            tracks, warps = args
-            self.assertEqual(len(tracks), 1)
-            self.assertEqual(tracks[0]["id"], "preview_audio")
-            self.assertEqual(tracks[0]["path"], voice_audio)
-            self.assertEqual(tracks[0]["end"], 5.0)
-            mock_gui.media_player.set_audio_file.assert_called_once_with(voice_audio)
-            mock_gui.sync_preview_audio_track_to_output.assert_called_once_with(apply_to_player=False)
+            mock_gui.sync_preview_audio_track_to_output.assert_called_once_with(apply_to_player=True, force=True)
+
+    test_on_preview_ready_reattaches_audio_tracks = test_on_preview_ready_syncs_preview_audio_track
 
     def test_vocal_processor_cuda_runtime_setup(self):
         from unittest.mock import patch, MagicMock
@@ -2258,6 +2247,219 @@ class TestRuntimeBugfixes(unittest.TestCase):
                         hiddenimports_items.append(sub.value)
 
         self.assertIn("msgpack", hiddenimports_items, "'msgpack' must be in hiddenimports in CapCap.spec")
+
+    def test_timeline_playhead_repaints_only_on_pixel_movement(self):
+        from unittest.mock import MagicMock
+        from ui.views.editor.timeline import EditorTimeline
+
+        timeline = EditorTimeline()
+        mock_viewport = MagicMock()
+        mock_viewport.width.return_value = 1000
+        timeline.viewport = MagicMock(return_value=mock_viewport)
+        timeline.pixels_per_second = 100.0  # 100 px/sec => 1ms = 0.1px
+
+        # 1. When not playing: every set_playhead should trigger update()
+        timeline._playing = False
+        timeline.set_playhead(1.0)
+        self.assertEqual(mock_viewport.update.call_count, 1)
+        mock_viewport.update.reset_mock()
+
+        # Repeated call with same position still updates when paused/seeking
+        timeline.set_playhead(1.0)
+        self.assertEqual(mock_viewport.update.call_count, 1)
+        mock_viewport.update.reset_mock()
+
+        # 2. When playing:
+        timeline._playing = True
+        timeline._last_playhead_px = None
+
+        # First playback call updates viewport
+        timeline.set_playhead(1.0)  # cur_px = 8 + round(100) = 108
+        self.assertEqual(mock_viewport.update.call_count, 1)
+        mock_viewport.update.reset_mock()
+
+        # Sub-pixel movement (1.001s -> cur_px still 108) must NOT update viewport
+        timeline.set_playhead(1.001)
+        self.assertEqual(mock_viewport.update.call_count, 0)
+
+        # Movement of >= 1 full pixel (1.02s -> cur_px 110) MUST update viewport
+        timeline.set_playhead(1.02)
+        self.assertEqual(mock_viewport.update.call_count, 1)
+
+    def test_media_backend_clock_sync_gated_by_warps(self):
+        from unittest.mock import MagicMock
+        from PySide6.QtMultimedia import QMediaPlayer
+        from ui.utils.media_backend import MpvMediaPlayerBackend
+
+        backend = MpvMediaPlayerBackend.__new__(MpvMediaPlayerBackend)
+        backend._source_path = "video.mp4"
+        backend._video_frozen = False
+        backend._player = MagicMock()
+        backend._base_playback_rate = 1.0
+        backend._is_warped_preview = MagicMock(return_value=False)
+        backend._get_warp_speed_for_media_time = MagicMock(return_value=1.0)
+        backend._native_audio_active = True
+        backend._native_audio_engine = MagicMock()
+        backend._native_audio_engine.timeline_position_ms.return_value = 5000  # 5.0s
+        backend._state = QMediaPlayer.PlayingState
+        backend._last_seek_mono = 0.0
+        backend._video_time_warps = []
+        backend._current_applied_speed = 1.0
+
+        # Case 1: No time warps and not warped preview -> No slaving (no seek, no speed steering)
+        # Even with 1000ms drift between video (4.0s) and audio (5.0s)
+        backend._update_video_speed_for_time_warps(4.0)
+        backend._player.command.assert_not_called()
+        self.assertEqual(backend._current_applied_speed, 1.0)
+
+        # Case 2: Time warps exist and drift > 0.40s -> snaps MPV frame via seek
+        backend._video_time_warps = [{"start": 0.0, "end": 10.0, "speed": 1.0}]
+        backend._update_video_speed_for_time_warps(4.0)
+        backend._player.command.assert_called_once_with("seek", 5.0, "absolute", "exact")
+        backend._player.command.reset_mock()
+
+        # Case 3: Time warps exist and moderate drift (60ms - 400ms) -> steers speed up to ±12% without seek
+        # Video at 4.85s, expected 5.0s -> drift = +0.15s (> 0.06s and <= 0.40s)
+        # Steer = min(0.12, 0.15 * 0.8) = +0.12 -> target_speed = 1.12
+        backend._current_applied_speed = 1.0
+        backend._update_video_speed_for_time_warps(4.85)
+        backend._player.command.assert_not_called()
+        self.assertAlmostEqual(backend._current_applied_speed, 1.12, places=2)
+
+    def test_pipeline_controller_disables_tts_prefetch(self):
+        from unittest.mock import MagicMock, patch
+        from ui.controllers.pipeline_controller import PipelineController
+
+        gui = MagicMock()
+        gui.workspace_root = "C:/test"
+        gui.get_transcription_engine.return_value = "whisper"
+        gui.is_skip_translation.return_value = False
+        gui.get_output_mode_key.return_value = "both"
+        gui.get_audio_handling_mode.return_value = "fast"
+        gui.get_source_language_code.return_value = "auto"
+        gui.get_target_language_code.return_value = "vi"
+        gui.is_ai_polish_enabled.return_value = False
+        gui.get_ai_style_instruction.return_value = ""
+        gui.get_whisper_model_name.return_value = "base"
+        gui.is_speaker_diarization_enabled.return_value = False
+        gui.get_speaker_diarization_num_speakers.return_value = -1
+        gui.get_active_voice_name.return_value = "Bao"
+        gui._parse_voice_speed_value.return_value = 1.0
+
+        ctrl = PipelineController(gui)
+        ctrl.target_stage = "full"
+        ctrl._ensure_local_worker_running = MagicMock()
+        ctrl._start_prepare_status_polling = MagicMock()
+
+        with patch("ui.controllers.pipeline_controller.PrepareWorkflowWorker") as MockWorker:
+            ctrl.start_prepare_workflow("sample.mp4")
+            self.assertTrue(MockWorker.called)
+            kwargs = MockWorker.call_args[1]
+            self.assertEqual(kwargs.get("prefetch_voice_name"), "")
+
+    def test_voiceover_progress_updates_dialog_even_without_percent(self):
+        from unittest.mock import MagicMock
+        from ui.main_window import VideoTranslatorGUI
+
+        gui = MagicMock()
+        gui.log = MagicMock()
+        gui.pipeline_controller = MagicMock()
+        dlg = MagicMock()
+        dlg.isVisible.return_value = True
+        step_mock = MagicMock()
+        dlg.steps = {"voiceover": step_mock}
+        dlg.step_order = ["ai_process", "voiceover", "preview"]
+        gui.pipeline_controller.progress_dialog = dlg
+
+        # Case 1: Informational message without percent (e.g. Loading VieNeu-TTS)
+        VideoTranslatorGUI._on_voiceover_progress(gui, "Loading VieNeu-TTS v3 Turbo (ONNX)...")
+        dlg.footer.setText.assert_called_with("Đang tải mô hình VieNeu-TTS v3 Turbo (ONNX)...")
+
+        # Case 2: Progress message with percent
+        dlg.footer.setText.reset_mock()
+        VideoTranslatorGUI._on_voiceover_progress(gui, "Synthesizing with voice 'Bao': 10/20 (50.0%)...")
+        step_mock.status_label.setText.assert_called_with("50%")
+        self.assertTrue(dlg.footer.setText.called)
+
+    def test_voice_workflow_manual_speed_bypasses_smart_and_force_fit(self):
+        from unittest.mock import MagicMock
+        from app.workflows.voice_workflow import VoiceWorkflow
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wf = VoiceWorkflow(tmpdir)
+            wf.engine_runtime = MagicMock()
+            wf._probe_wav_duration_seconds = MagicMock(return_value=2.0)
+            wf.engine_runtime.change_wav_speed.side_effect = lambda input_wav_path, output_wav_path, speed_ratio: output_wav_path
+
+            wav_path = os.path.join(tmpdir, "seg_0000.wav")
+            with open(wav_path, "wb") as f:
+                f.write(b"RIFF dummy wav data")
+
+            segments = [
+                {
+                    "start": 0.0,
+                    "end": 1.0,
+                    "voice_speed": 2.0,
+                }
+            ]
+
+            # 1. Smart fit sync mode: should bypass fit_wav_to_duration and use change_wav_speed(speed_ratio=2.0)
+            wf._apply_safe_timing_polish(
+                segments=segments,
+                wavs=[wav_path],
+                tmp_dir=tmpdir,
+                voice_speed=1.0,
+                sync_mode="smart",
+            )
+            self.assertFalse(wf.engine_runtime.fit_wav_to_duration.called)
+            wf.engine_runtime.change_wav_speed.assert_called_once()
+            _, kwargs = wf.engine_runtime.change_wav_speed.call_args
+            self.assertEqual(kwargs.get("speed_ratio"), 2.0)
+
+            # 2. Force fit sync mode: should bypass fit_wav_to_duration and use change_wav_speed(speed_ratio=2.0)
+            wf.engine_runtime.reset_mock()
+            wf._apply_safe_timing_polish(
+                segments=segments,
+                wavs=[wav_path],
+                tmp_dir=tmpdir,
+                voice_speed=1.0,
+                sync_mode="force",
+            )
+            self.assertFalse(wf.engine_runtime.fit_wav_to_duration.called)
+            wf.engine_runtime.change_wav_speed.assert_called_once()
+            _, kwargs = wf.engine_runtime.change_wav_speed.call_args
+            self.assertEqual(kwargs.get("speed_ratio"), 2.0)
+
+    def test_apply_generated_tts_texts_updates_segment_voice_speed(self):
+        from unittest.mock import MagicMock
+        from ui.main_window import VideoTranslatorGUI
+
+        gui = MagicMock()
+        gui.current_translated_segments = [
+            {
+                "start": 0.0,
+                "end": 2.0,
+                "tts_text": "Xin chào",
+                "subtitle_vi": "Xin chào",
+                "voice_speed": 1.0,
+            }
+        ]
+
+        voice_segments = [
+            {
+                "start": 0.0,
+                "end": 2.0,
+                "tts_text": "Xin chào",
+                "subtitle_vi": "Xin chào",
+                "voice_speed": 1.3,
+                "_auto_fit_applied": True,
+            }
+        ]
+
+        updated = VideoTranslatorGUI._apply_generated_tts_texts(gui, voice_segments)
+        self.assertTrue(updated)
+        self.assertEqual(gui.current_translated_segments[0]["voice_speed"], 1.3)
+        self.assertTrue(gui.current_translated_segments[0]["_auto_fit_applied"])
 
 
 if __name__ == "__main__":

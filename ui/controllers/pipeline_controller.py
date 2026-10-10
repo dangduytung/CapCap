@@ -453,17 +453,23 @@ class PipelineController:
             overlay.set_editable(False)
             overlay.hide()
 
+        self.start_prepare_workflow(video_path)
+
+    def _ensure_local_worker_running(self):
+        self.active_processing_device = (
+            "cuda" if os.getenv("CAPCAP_DEVICE", "cpu").strip().lower() == "cuda" else "cpu"
+        )
+        self._start_local_worker_server(self.active_processing_device)
+        self.gui.log(
+            f"[Pipeline] Local worker process started at {self.local_worker_api_url} "
+            f"(device={self.active_processing_device})"
+        )
+
+    def start_prepare_workflow(self, video_path):
         # Start the background worker
         self.gui.log(f"[Pipeline] Starting prepare workflow for: {video_path}")
         try:
-            self.active_processing_device = (
-                "cuda" if os.getenv("CAPCAP_DEVICE", "cpu").strip().lower() == "cuda" else "cpu"
-            )
-            self._start_local_worker_server(self.active_processing_device)
-            self.gui.log(
-                f"[Pipeline] Local worker process started at {self.local_worker_api_url} "
-                f"(device={self.active_processing_device})"
-            )
+            self._ensure_local_worker_running()
         except Exception as exc:
             self.pipeline_fail(f"Could not start local worker process: {exc}")
             return
@@ -473,10 +479,11 @@ class PipelineController:
         # extracts audio and transcribes, but does not call translation.
         skip_translation = self.gui.is_skip_translation() or self.target_stage == "transcript"
         output_mode = self.gui.get_output_mode_key()
-        # Prefetch voice audio only when Full Pipeline will immediately
-        # continue into TTS. A Run to Translate stop point must not spend
-        # resources creating cache entries the user may never need.
-        prefetch_tts = self.target_stage == "full" and output_mode in ("voice", "both")
+        # Do not prefetch TTS in PrepareWorkflow. Prefetching TTS in the background during
+        # Step 1 blocks translation completion silently without reporting progress
+        # to the UI dialog, causing the user to think the pipeline hung, and causes
+        # Step 2 (voiceover) to finish in 0.1s without displaying any live cue progress.
+        prefetch_tts = False
         self.gui.prepare_workflow_thread = PrepareWorkflowWorker(
             self.gui.workspace_root,
             video_path,
@@ -505,6 +512,7 @@ class PipelineController:
             self.gui.prepare_workflow_thread.progress.connect(
                 lambda pct, msg: self._on_prepare_step_progress(getattr(self, "prepare_step_id", "transcription") or "transcription", pct, detail=msg)
             )
+        prepare_run_id = getattr(self, "prepare_run_id", 0)
         self.gui.prepare_workflow_thread.finished.connect(
             lambda project_state_path, error, run_id=prepare_run_id: self.on_prepare_workflow_finished(
                 project_state_path,

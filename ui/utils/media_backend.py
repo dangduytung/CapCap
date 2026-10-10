@@ -744,8 +744,10 @@ class MpvMediaPlayerBackend(QObject):
         nominal_speed = max(0.1, min(4.0, base_rate * warp_speed))
 
         # When native audio engine is active and playing, slave MPV's video timing to the audio clock
+        has_warps = bool(getattr(self, "_video_time_warps", []))
         if (
-            getattr(self, "_native_audio_active", False)
+            (has_warps or is_warped)
+            and getattr(self, "_native_audio_active", False)
             and self._native_audio_engine is not None
             and getattr(self, "_state", None) == QMediaPlayer.PlayingState
             and not (time.monotonic() - getattr(self, "_last_seek_mono", 0.0) < 0.25)
@@ -759,17 +761,17 @@ class MpvMediaPlayerBackend(QObject):
                 expected_v_s = TimeWarpService.timeline_to_media_time(a_pos_ms / 1000.0, warps)
             drift_s = expected_v_s - float(current_time_s)
 
-            if abs(drift_s) > 0.25:
-                # Video is significantly out of sync (> 250ms). Snap MPV video frame to audio clock!
+            if abs(drift_s) > 0.40:
+                # Video is significantly out of sync (> 400ms). Snap MPV video frame to audio clock!
                 try:
                     self._player.command("seek", expected_v_s, "absolute", "exact")
                 except Exception:
                     pass
                 target_speed = nominal_speed
-            elif abs(drift_s) > 0.035:
-                # Video has moderate drift (35ms - 250ms).
-                # Gently nudge MPV speed by up to ±25% so video smoothly locks onto audio without seeking.
-                steer = max(-0.25, min(0.25, drift_s * 1.5))
+            elif abs(drift_s) > 0.06:
+                # Video has moderate drift (60ms - 400ms).
+                # Gently nudge MPV speed by up to ±12% so video smoothly locks onto audio without seeking.
+                steer = max(-0.12, min(0.12, drift_s * 0.8))
                 target_speed = max(0.1, min(4.0, nominal_speed * (1.0 + steer)))
             else:
                 target_speed = nominal_speed
@@ -1162,6 +1164,13 @@ class MpvMediaPlayerBackend(QObject):
                 self._position_ms = int(round(media_pos_s * 1000))
             else:
                 self._position_ms = pos_ms
+
+            # Throttle emission to UI during active playback to at most once every 25ms (40 FPS)
+            now = time.monotonic()
+            last_emit = getattr(self, "_last_audio_pos_emit_time", 0.0)
+            if getattr(self, "_state", None) == QMediaPlayer.PlayingState and (now - last_emit) < 0.025:
+                return
+            self._last_audio_pos_emit_time = now
             self.positionChanged.emit(self._position_ms)
 
     def close_native_audio(self):

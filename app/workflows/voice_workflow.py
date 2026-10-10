@@ -959,6 +959,10 @@ class VoiceWorkflow:
             if not wav_path or not os.path.exists(wav_path):
                 adjusted_wavs.append(wav_path)
                 continue
+            # If this segment was already auto-fitted in the current polish pass, do not multiply again!
+            if segments and idx < len(segments) and segments[idx].get("_auto_fit_applied"):
+                adjusted_wavs.append(wav_path)
+                continue
             seg_speed = float(voice_speed)
             if segments and idx < len(segments):
                 try:
@@ -993,115 +997,132 @@ class VoiceWorkflow:
         for idx, (seg, wav_path) in enumerate(zip(list(segments or []), polished_wavs)):
             if not wav_path or not os.path.exists(wav_path):
                 continue
+            try:
+                manual_speed = float(seg.get("voice_speed", 1.0) or 1.0)
+            except (TypeError, ValueError):
+                manual_speed = 1.0
+            has_manual_override = abs(manual_speed - 1.0) >= 0.02
+
             target_duration = max(0.0, float(seg.get("end", 0.0)) - float(seg.get("start", 0.0)))
             actual_duration = self._probe_wav_duration_seconds(wav_path)
             ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
 
-            # SMART: trim trailing silence first so the duration
-            # estimate used by speed-adjustment heuristics is based
-            # on actual speech, not dead air.
-            if (sync_mode or "off").strip().lower() == "smart":
-                trimmed_path = os.path.join(tmp_dir, f"seg_{idx:04d}_silencetrim.wav")
-                trimmed = self.engine_runtime.trim_trailing_silence(
-                    input_wav_path=polished_wavs[idx],
-                    output_wav_path=trimmed_path,
-                )
-                if trimmed != polished_wavs[idx]:
-                    polished_wavs[idx] = trimmed
-                    actual_duration = self._probe_wav_duration_seconds(trimmed)
-                    ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
-                    seg["_trimmed_silence"] = True
-            speech_cost = int(((seg.get("_tts_metrics") or {}).get("speech_cost")) or 0)
-            duration_sec = float(((seg.get("_tts_metrics") or {}).get("duration_sec")) or target_duration)
-            attempt_count = int((seg.get("attempt_count") or (seg.get("_tts_metrics") or {}).get("attempt_count") or 1))
+            if not has_manual_override:
+                # SMART: trim trailing silence first so the duration
+                # estimate used by speed-adjustment heuristics is based
+                # on actual speech, not dead air.
+                if (sync_mode or "off").strip().lower() == "smart":
+                    trimmed_path = os.path.join(tmp_dir, f"seg_{idx:04d}_silencetrim.wav")
+                    trimmed = self.engine_runtime.trim_trailing_silence(
+                        input_wav_path=polished_wavs[idx],
+                        output_wav_path=trimmed_path,
+                    )
+                    if trimmed != polished_wavs[idx]:
+                        polished_wavs[idx] = trimmed
+                        actual_duration = self._probe_wav_duration_seconds(trimmed)
+                        ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
+                        seg["_trimmed_silence"] = True
+                speech_cost = int(((seg.get("_tts_metrics") or {}).get("speech_cost")) or 0)
+                duration_sec = float(((seg.get("_tts_metrics") or {}).get("duration_sec")) or target_duration)
+                attempt_count = int((seg.get("attempt_count") or (seg.get("_tts_metrics") or {}).get("attempt_count") or 1))
 
-            if self._should_use_speedup_before_rewrite(
-                duration_sec=duration_sec,
-                speech_cost=speech_cost,
-                ratio=ratio,
-            ):
-                speed_ratio = min(1.15, max(1.0, ratio))
-                if abs(speed_ratio - 1.0) >= 0.02:
-                    adjusted_path = os.path.join(tmp_dir, f"seg_{idx:04d}_polish_speed.wav")
+                if self._should_use_speedup_before_rewrite(
+                    duration_sec=duration_sec,
+                    speech_cost=speech_cost,
+                    ratio=ratio,
+                ):
+                    speed_ratio = min(1.15, max(1.0, ratio))
+                    if abs(speed_ratio - 1.0) >= 0.02:
+                        adjusted_path = os.path.join(tmp_dir, f"seg_{idx:04d}_polish_speed.wav")
+                        polished_wavs[idx] = self.engine_runtime.change_wav_speed(
+                            input_wav_path=polished_wavs[idx],
+                            output_wav_path=adjusted_path,
+                            speed_ratio=speed_ratio,
+                        )
+                        seg["action_taken"] = "speed_light"
+                        metrics = dict(seg.get("_tts_metrics") or {})
+                        metrics["action_taken"] = "speed_light"
+                        seg["_tts_metrics"] = metrics
+
+                actual_duration = self._probe_wav_duration_seconds(polished_wavs[idx])
+                ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
+                stubborn_speed = self._segment_speed_ratio_for_stubborn_segment(
+                    duration_sec=duration_sec,
+                    speech_cost=speech_cost,
+                    ratio=ratio,
+                    attempt_count=attempt_count,
+                    segment_index=idx,
+                )
+                if stubborn_speed > 1.0:
+                    adjusted_path = os.path.join(tmp_dir, f"seg_{idx:04d}_stubborn_speed.wav")
                     polished_wavs[idx] = self.engine_runtime.change_wav_speed(
                         input_wav_path=polished_wavs[idx],
                         output_wav_path=adjusted_path,
-                        speed_ratio=speed_ratio,
+                        speed_ratio=stubborn_speed,
                     )
-                    seg["action_taken"] = "speed_light"
+                    seg["action_taken"] = "speed_stubborn"
                     metrics = dict(seg.get("_tts_metrics") or {})
-                    metrics["action_taken"] = "speed_light"
+                    metrics["action_taken"] = "speed_stubborn"
+                    metrics["stubborn_speed_ratio"] = round(stubborn_speed, 3)
                     seg["_tts_metrics"] = metrics
 
-            actual_duration = self._probe_wav_duration_seconds(polished_wavs[idx])
-            ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
-            stubborn_speed = self._segment_speed_ratio_for_stubborn_segment(
-                duration_sec=duration_sec,
-                speech_cost=speech_cost,
-                ratio=ratio,
-                attempt_count=attempt_count,
-                segment_index=idx,
-            )
-            if stubborn_speed > 1.0:
-                adjusted_path = os.path.join(tmp_dir, f"seg_{idx:04d}_stubborn_speed.wav")
-                polished_wavs[idx] = self.engine_runtime.change_wav_speed(
-                    input_wav_path=polished_wavs[idx],
-                    output_wav_path=adjusted_path,
-                    speed_ratio=stubborn_speed,
-                )
-                seg["action_taken"] = "speed_stubborn"
-                metrics = dict(seg.get("_tts_metrics") or {})
-                metrics["action_taken"] = "speed_stubborn"
-                metrics["stubborn_speed_ratio"] = round(stubborn_speed, 3)
-                seg["_tts_metrics"] = metrics
-
-            actual_duration = self._probe_wav_duration_seconds(polished_wavs[idx])
-            ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
-            rescue_speed = self._segment_speed_ratio_for_outlier(
-                duration_sec=duration_sec,
-                speech_cost=speech_cost,
-                ratio=ratio,
-            )
-            if rescue_speed > 1.0 and ratio > 1.15:
-                adjusted_path = os.path.join(tmp_dir, f"seg_{idx:04d}_rescue_speed.wav")
-                polished_wavs[idx] = self.engine_runtime.change_wav_speed(
-                    input_wav_path=polished_wavs[idx],
-                    output_wav_path=adjusted_path,
-                    speed_ratio=rescue_speed,
-                )
-                seg["action_taken"] = "speed_rescue"
-                metrics = dict(seg.get("_tts_metrics") or {})
-                metrics["action_taken"] = "speed_rescue"
-                metrics["rescue_speed_ratio"] = round(rescue_speed, 3)
-                seg["_tts_metrics"] = metrics
-
-            actual_duration = self._probe_wav_duration_seconds(polished_wavs[idx])
-            ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
-            medium_speed = self._segment_speed_ratio_for_medium_overrun(ratio=ratio)
-            if medium_speed > 1.0:
-                adjusted_path = os.path.join(tmp_dir, f"seg_{idx:04d}_medium_speed.wav")
-                polished_wavs[idx] = self.engine_runtime.change_wav_speed(
-                    input_wav_path=polished_wavs[idx],
-                    output_wav_path=adjusted_path,
-                    speed_ratio=medium_speed,
-                )
-                seg["action_taken"] = "speed_balance"
-                metrics = dict(seg.get("_tts_metrics") or {})
-                metrics["action_taken"] = "speed_balance"
-                metrics["balance_speed_ratio"] = round(medium_speed, 3)
-                seg["_tts_metrics"] = metrics
-
-            if (sync_mode or "off").strip().lower() == "smart":
                 actual_duration = self._probe_wav_duration_seconds(polished_wavs[idx])
                 ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
-                if self._should_allow_post_rewrite_speedup(ratio=ratio):
-                    synced_path = os.path.join(tmp_dir, f"seg_{idx:04d}_smartfit.wav")
-                    polished_wavs[idx] = self.engine_runtime.fit_wav_to_duration(
+                rescue_speed = self._segment_speed_ratio_for_outlier(
+                    duration_sec=duration_sec,
+                    speech_cost=speech_cost,
+                    ratio=ratio,
+                )
+                if rescue_speed > 1.0 and ratio > 1.15:
+                    adjusted_path = os.path.join(tmp_dir, f"seg_{idx:04d}_rescue_speed.wav")
+                    polished_wavs[idx] = self.engine_runtime.change_wav_speed(
                         input_wav_path=polished_wavs[idx],
-                        output_wav_path=synced_path,
-                        target_duration_seconds=target_duration,
-                        mode="smart",
+                        output_wav_path=adjusted_path,
+                        speed_ratio=rescue_speed,
                     )
+                    seg["action_taken"] = "speed_rescue"
+                    metrics = dict(seg.get("_tts_metrics") or {})
+                    metrics["action_taken"] = "speed_rescue"
+                    metrics["rescue_speed_ratio"] = round(rescue_speed, 3)
+                    seg["_tts_metrics"] = metrics
+
+                actual_duration = self._probe_wav_duration_seconds(polished_wavs[idx])
+                ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
+                medium_speed = self._segment_speed_ratio_for_medium_overrun(ratio=ratio)
+                if medium_speed > 1.0:
+                    adjusted_path = os.path.join(tmp_dir, f"seg_{idx:04d}_medium_speed.wav")
+                    polished_wavs[idx] = self.engine_runtime.change_wav_speed(
+                        input_wav_path=polished_wavs[idx],
+                        output_wav_path=adjusted_path,
+                        speed_ratio=medium_speed,
+                    )
+                    seg["action_taken"] = "speed_balance"
+                    metrics = dict(seg.get("_tts_metrics") or {})
+                    metrics["action_taken"] = "speed_balance"
+                    metrics["balance_speed_ratio"] = round(medium_speed, 3)
+                    seg["_tts_metrics"] = metrics
+
+                if (sync_mode or "off").strip().lower() == "smart":
+                    actual_duration = self._probe_wav_duration_seconds(polished_wavs[idx])
+                    ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
+                    if self._should_allow_post_rewrite_speedup(ratio=ratio):
+                        synced_path = os.path.join(tmp_dir, f"seg_{idx:04d}_smartfit.wav")
+                        fit_res = self.engine_runtime.fit_wav_to_duration(
+                            input_wav_path=polished_wavs[idx],
+                            output_wav_path=synced_path,
+                            target_duration_seconds=target_duration,
+                            mode="smart",
+                        )
+                        if fit_res != polished_wavs[idx]:
+                            polished_wavs[idx] = fit_res
+                            new_dur = self._probe_wav_duration_seconds(fit_res)
+                            if new_dur > 0 and actual_duration > new_dur:
+                                calc_speed = round(actual_duration / new_dur, 1)
+                                if calc_speed > 1.0:
+                                    seg["voice_speed"] = calc_speed
+                                    seg["_auto_fit_applied"] = True
+                                    seg["action_taken"] = "smart_fit"
+
             if (sync_mode or "off").strip().lower() in ("timeline", "timeline priority"):
                 # Timeline Priority: cut audio to fit the segment window,
                 # but extend to fill gaps to the next segment to minimize cutting.
@@ -1136,6 +1157,14 @@ class VoiceWorkflow:
             for idx, (seg, wav_path) in enumerate(zip(list(segments or []), polished_wavs)):
                 if not wav_path or not os.path.exists(wav_path):
                     continue
+                try:
+                    manual_speed = float(seg.get("voice_speed", 1.0) or 1.0)
+                except (TypeError, ValueError):
+                    manual_speed = 1.0
+                if abs(manual_speed - 1.0) >= 0.02 and not seg.get("_auto_fit_applied"):
+                    continue
+                if seg.get("_auto_fit_applied"):
+                    continue
                 target_duration = max(0.0, float(seg.get("end", 0.0)) - float(seg.get("start", 0.0)))
                 actual_duration = self._probe_wav_duration_seconds(wav_path)
                 ratio = (actual_duration / target_duration) if target_duration > 0 else 0.0
@@ -1147,7 +1176,17 @@ class VoiceWorkflow:
                         target_duration_seconds=target_duration,
                         mode="force",
                     )
-                    seg["action_taken"] = (seg.get("action_taken") or "") + "+force_fit"
+                    new_dur = self._probe_wav_duration_seconds(synced_path)
+                    if new_dur > 0 and actual_duration > new_dur:
+                        calc_speed = round(actual_duration / new_dur, 1)
+                        if calc_speed > 1.0:
+                            seg["voice_speed"] = calc_speed
+                            seg["_auto_fit_applied"] = True
+                            seg["action_taken"] = (seg.get("action_taken") or "") + "+force_fit"
+                        else:
+                            seg["action_taken"] = (seg.get("action_taken") or "") + "+force_fit"
+                    else:
+                        seg["action_taken"] = (seg.get("action_taken") or "") + "+force_fit"
                     seg["ratio"] = 1.0
         return polished_wavs
 

@@ -1630,7 +1630,10 @@ class PreviewController:
                     self.gui.video_view.set_preview_scale_mode(self.gui.get_output_scale_mode_key())
                 self.gui.media_player.setSource(QUrl.fromLocalFile(video_path))
                 self.gui.sync_live_subtitle_preview()
+                self.gui.sync_preview_audio_track_to_output(apply_to_player=True, force=True)
                 self.gui.refresh_ui_state()
+                if bool(getattr(self.gui, "_pipeline_active", False)) and str(getattr(self.gui, "_pipeline_step", "") or "").strip().lower() == "preview":
+                    self.gui.pipeline_controller.pipeline_advance("preview")
             except Exception:
                 pass
             return
@@ -1787,29 +1790,9 @@ class PreviewController:
                 self.gui.sync_live_subtitle_preview()
 
             # MPV runs with ao=null (video-only). When setSource() loaded preview_path above,
-            # it reset native_audio_engine's tracks to empty. We must re-attach the audio
-            # track so preview playback is not silent!
-            audio_source = (
-                getattr(self.gui, "last_mixed_vi_path", "")
-                or getattr(self.gui, "last_voice_vi_path", "")
-                or preview_path
-            )
-            if audio_source and os.path.exists(audio_source):
-                if hasattr(self.gui.media_player, "set_audio_tracks_snapshot"):
-                    dur = self.gui._audio_total_duration_ms() / 1000.0
-                    tracks = [{
-                        "id": "preview_audio",
-                        "path": audio_source,
-                        "start": 0.0,
-                        "end": dur,
-                        "volume": 100.0,
-                        "muted": False,
-                        "is_original_video": False,
-                    }]
-                    self.gui.media_player.set_audio_tracks_snapshot(tracks, getattr(self.gui, "video_time_warps", []))
-                if hasattr(self.gui.media_player, "set_audio_file"):
-                    self.gui.media_player.set_audio_file(audio_source)
-            self.gui.sync_preview_audio_track_to_output(apply_to_player=False)
+            # it reset native_audio_engine's tracks to empty. Re-sync all active preview
+            # audio tracks (A1 Audio, TS1, Music) with full gain/mute settings!
+            self.gui.sync_preview_audio_track_to_output(apply_to_player=True, force=True)
             if getattr(self.gui, "_play_video_filter_preview_when_ready", False):
                 self.gui._play_video_filter_preview_when_ready = False
                 self.gui.media_player.play()

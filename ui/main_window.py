@@ -3236,10 +3236,16 @@ class VideoTranslatorGUI(QMainWindow):
         candidates = [
             self.processed_artifacts.get("voice_vi"),
             self.last_voice_vi_path,
+            getattr(self.current_project_state, "artifacts", {}).get("voice_vi", "") if getattr(self, "current_project_state", None) else "",
+            self.get_project_temp_path("tts", "voice_vi.wav") if hasattr(self, "get_project_temp_path") else "",
         ]
         for candidate in candidates:
+            if not candidate:
+                continue
             normalized = self._normalize_local_file_path(candidate)
             if normalized and os.path.exists(normalized):
+                self.last_voice_vi_path = normalized
+                self.processed_artifacts["voice_vi"] = normalized
                 return normalized
         # Older projects may have persisted the generated WAV only on the
         # TS1 DubSubtitle layers, without a top-level voice_vi artifact.  Use
@@ -3553,8 +3559,14 @@ class VideoTranslatorGUI(QMainWindow):
         except Exception:
             was_playing = False
 
-        current_source = str(getattr(self.media_player, "_source_path", "") or "")
-        should_reset_source = not current_source or os.path.abspath(current_source) != os.path.abspath(source_video)
+        current_source = self._normalize_local_file_path(str(getattr(self.media_player, "_source_path", "") or ""))
+        preview_source = self._normalize_local_file_path(str(getattr(self, "last_preview_video_path", "") or ""))
+        is_preview_video = bool(
+            preview_source and os.path.exists(preview_source) and os.path.abspath(current_source) == os.path.abspath(preview_source)
+        )
+        should_reset_source = not current_source or (
+            os.path.abspath(current_source) != os.path.abspath(source_video) and not is_preview_video
+        )
 
         self._preview_audio_track_switching = True
         try:
@@ -11723,6 +11735,12 @@ class VideoTranslatorGUI(QMainWindow):
                 speed_spin.setFixedWidth(75 if (diarization_enabled and speaker_ids) else 85)
                 speed_spin.setFixedHeight(26)
                 speed_spin.setStyleSheet("QDoubleSpinBox { padding: 2px 4px; border-radius: 6px; }")
+                if (
+                    row.get("action_taken") in ("smart_fit", "force_fit")
+                    or "force_fit" in str(row.get("action_taken") or "")
+                    or row.get("_auto_fit_applied")
+                ):
+                    speed_spin.setToolTip(t("Voice speed adjusted to fit subtitle duration."))
                 speed_spin.valueChanged.connect(
                     lambda val, idx=idx: self.on_segment_voice_speed_changed(idx, val)
                 )
@@ -13769,11 +13787,14 @@ class VideoTranslatorGUI(QMainWindow):
 
         if not self.ensure_required_resources("Subtitle audio preview", include_voice=True, voice_name=voice_name):
             return
-        voice_speed = self._parse_voice_speed_value()
+        row = self._find_segment_editor_row(index)
+        try:
+            voice_speed = float(seg.get("voice_speed") or (row.get("voice_speed") if row else None) or self._parse_voice_speed_value() or 1.0)
+        except (TypeError, ValueError):
+            voice_speed = 1.0
         project_state = getattr(self, "current_project_state", None) or self.ensure_current_project()
         project_settings = getattr(project_state, "settings", {}) or {}
         normalizer_dictionary = dict(project_settings.get("normalizer_dictionary", {}) or {})
-        row = self._find_segment_editor_row(index)
         # The per-segment "Regenerate voice" button was moved to the
         # A2 Dub Track Inspector. Disable that one instead.
         if getattr(self, "audio_inspector_regenerate_voice_btn", None) is not None:
@@ -16997,6 +17018,10 @@ class VideoTranslatorGUI(QMainWindow):
                 new_audio_end = float((seg or {}).get("_audio_end")) if (seg or {}).get("_audio_end") is not None else None
             except (TypeError, ValueError):
                 new_audio_end = None
+            try:
+                seg_speed = float((seg or {}).get("voice_speed", 1.0) or 1.0)
+            except (TypeError, ValueError):
+                seg_speed = 1.0
             payload = {
                 "tts_text": tts_text,
                 "subtitle_vi": subtitle_vi,
@@ -17004,6 +17029,8 @@ class VideoTranslatorGUI(QMainWindow):
                 "action_taken": action_taken,
                 "ratio": ratio,
                 "attempt_count": int((seg or {}).get("attempt_count") or 1),
+                "voice_speed": seg_speed,
+                "_auto_fit_applied": bool((seg or {}).get("_auto_fit_applied", False)),
                 "start": new_start,
                 "end": new_end,
                 "_original_end": new_original_end,
@@ -17039,6 +17066,19 @@ class VideoTranslatorGUI(QMainWindow):
             seg["_tts_dirty"] = False
             if next_payload.get("_wav_path"):
                 seg["_wav_path"] = next_payload["_wav_path"]
+            try:
+                new_speed = float(next_payload.get("voice_speed") or 1.0)
+            except (TypeError, ValueError):
+                new_speed = 1.0
+            try:
+                old_speed = float(seg.get("voice_speed") or 1.0)
+            except (TypeError, ValueError):
+                old_speed = 1.0
+            if abs(new_speed - old_speed) >= 0.05:
+                seg["voice_speed"] = round(new_speed, 1)
+                updated = True
+            if next_payload.get("_auto_fit_applied"):
+                seg["_auto_fit_applied"] = True
             # When group_id is present, multiple sub-segments share the same group_id.
             # Do NOT overwrite their individual start/end times with the entire group's start/end,
             # which would collapse them onto the same time slice!
@@ -17086,29 +17126,48 @@ class VideoTranslatorGUI(QMainWindow):
 
     def _on_voiceover_progress(self, message: str):
         self.log(message)
-        m = re.search(r"\((\d+(?:\.\d+)?)%\)", str(message or ""))
+        raw_msg = str(message or "").strip()
+        pipe_ctrl = getattr(self, "pipeline_controller", None)
+        dlg = getattr(pipe_ctrl, "progress_dialog", None) if pipe_ctrl else None
+
+        m = re.search(r"\((\d+(?:\.\d+)?)%\)", raw_msg)
+        pct = None
         if m:
             try:
                 pct = float(m.group(1))
+            except Exception:
+                pct = None
+
+        if pct is not None:
+            try:
                 if hasattr(self, "progress_bar"):
                     val = 85 + int((pct / 100.0) * 14.0)
                     self.progress_bar.setValue(min(99, max(85, val)))
 
-                pipe_ctrl = getattr(self, "pipeline_controller", None)
-                if pipe_ctrl and getattr(pipe_ctrl, "progress_dialog", None):
-                    dlg = pipe_ctrl.progress_dialog
-                    if dlg.isVisible():
-                        if "voiceover" in dlg.steps:
-                            dlg.steps["voiceover"].status_label.setText(f"{int(pct)}%")
-                            dlg.steps["voiceover"].status_label.setStyleSheet("color: #00E5FF; font-weight: bold;")
-                        dlg.footer.setText(t(message))
-                        dlg.footer.setStyleSheet("color: #9fb7d5; font-size: 13px; margin-top: 15px;")
-                        if getattr(dlg, "step_order", None) and "voiceover" in dlg.step_order:
-                            total_stages = max(1, len(dlg.step_order))
-                            stage_slice = 100.0 / total_stages
-                            current_stage_idx = dlg.step_order.index("voiceover")
-                            overall_val = (current_stage_idx * stage_slice) + ((pct / 100.0) * stage_slice)
-                            dlg.overall_progress.setValue(min(100, max(0, int(overall_val))))
+                if dlg and dlg.isVisible():
+                    if "voiceover" in dlg.steps:
+                        dlg.steps["voiceover"].status_label.setText(f"{int(pct)}%")
+                        dlg.steps["voiceover"].status_label.setStyleSheet("color: #00E5FF; font-weight: bold;")
+                    if getattr(dlg, "step_order", None) and "voiceover" in dlg.step_order:
+                        total_stages = max(1, len(dlg.step_order))
+                        stage_slice = 100.0 / total_stages
+                        current_stage_idx = dlg.step_order.index("voiceover")
+                        overall_val = (current_stage_idx * stage_slice) + ((pct / 100.0) * stage_slice)
+                        dlg.overall_progress.setValue(min(100, max(0, int(overall_val))))
+            except Exception:
+                pass
+
+        if dlg and dlg.isVisible() and raw_msg:
+            try:
+                disp_text = raw_msg
+                if raw_msg.startswith("Synthesizing with"):
+                    disp_text = raw_msg.replace("Synthesizing with", t("Synthesizing with"))
+                elif raw_msg.startswith("Synthesizing "):
+                    disp_text = raw_msg.replace("Synthesizing ", t("Synthesizing ") + " ").replace("subtitle segments", t("segments"))
+                else:
+                    disp_text = t(raw_msg)
+                dlg.footer.setText(disp_text)
+                dlg.footer.setStyleSheet("color: #9fb7d5; font-size: 13px; margin-top: 15px;")
             except Exception:
                 pass
 
