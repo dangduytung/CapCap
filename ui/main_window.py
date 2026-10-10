@@ -3517,8 +3517,10 @@ class VideoTranslatorGUI(QMainWindow):
     def sync_preview_audio_track_to_output(self, *, apply_to_player: bool = True, force: bool = False):
         target_mode = self._preferred_preview_audio_track_mode()
         self._preview_audio_track_mode = target_mode
+        self.log(f"[AudioSync] sync called: apply={apply_to_player}, force={force}, mode={target_mode}, voice_path={bool(getattr(self, 'last_voice_vi_path', ''))}, output_mode={self.get_output_mode_key()}")
 
         if not apply_to_player or not getattr(self, "media_player", None):
+            self.log(f"[AudioSync] SKIP: apply_to_player={apply_to_player}, has_player={getattr(self, 'media_player', None) is not None}")
             return
 
         source_video = self._resolve_preview_original_video_path()
@@ -3531,6 +3533,7 @@ class VideoTranslatorGUI(QMainWindow):
                 or os.path.abspath(current_source) == os.path.abspath(source_video)
                 or (bool(preview_source) and os.path.abspath(current_source) == os.path.abspath(preview_source))
             )
+        self.log(f"[AudioSync] source_video={bool(source_video)}, current_source={bool(current_source)}, should_apply={should_apply}")
 
         if should_apply:
             self._apply_preview_audio_track_selection()
@@ -3542,9 +3545,11 @@ class VideoTranslatorGUI(QMainWindow):
             or not hasattr(self, "media_player")
             or not getattr(self, "media_player", None)
         ):
+            self.log(f"[AudioSync] _apply EARLY RETURN: switching={getattr(self, '_preview_audio_track_switching', False)}, has_player={hasattr(self, 'media_player')}")
             return
         source_video = self._resolve_preview_original_video_path()
         if not source_video:
+            self.log("[AudioSync] _apply EARLY RETURN: source_video empty")
             return
 
         # Always load the original audio sidecar. Resolve/build the composed
@@ -3557,6 +3562,8 @@ class VideoTranslatorGUI(QMainWindow):
         )
         preferred_mode = self._preferred_preview_audio_track_mode()
         selected_mode = str(getattr(self, "_preview_audio_track_mode", "") or preferred_mode).strip().lower()
+        voice_only_debug = self._resolve_preview_voice_only_audio_path()
+        self.log(f"[AudioSync] _apply: is_native={is_native_audio}, native_active={getattr(self.media_player, '_native_audio_active', False)}, preferred={preferred_mode}, selected={selected_mode}, voice_path_exists={bool(voice_only_debug)}, duration_ms={self._audio_total_duration_ms()}")
         if is_native_audio:
             dubbed_audio_kind, dubbed_audio = "native", ""
         elif selected_mode == "dubbed":
@@ -3679,6 +3686,7 @@ class VideoTranslatorGUI(QMainWindow):
                     tracks_snapshot.append(m_copy)
 
                 warps = list(getattr(self, "video_time_warps", []) or [])
+                self.log(f"[AudioSync] set_audio_tracks_snapshot: {len(tracks_snapshot)} tracks={[t.get('id') for t in tracks_snapshot]}, dur_ms={self._audio_total_duration_ms()}")
                 self.media_player.set_audio_tracks_snapshot(tracks_snapshot, warps)
 
             if current_position > 0:
