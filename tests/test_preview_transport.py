@@ -155,6 +155,7 @@ class TestPreviewTransport(unittest.TestCase):
         backend = MpvMediaPlayerBackend.__new__(MpvMediaPlayerBackend)
         backend._source_path = "video.mp4"
         backend._video_frozen = False
+        backend._state = QMediaPlayer.PlayingState
         backend._player = MagicMock()
         backend._player.time_pos = 2.0
         backend._player.pause = False
@@ -337,11 +338,13 @@ class TestPreviewTransport(unittest.TestCase):
 
     def test_sync_audio_uses_timeline_coords_after_freeze(self):
         """Verify _sync_audio_to_video maps media time through warps and does not seek backwards after freeze."""
+        from PySide6.QtMultimedia import QMediaPlayer
         from ui.utils.media_backend import MpvMediaPlayerBackend
 
         backend = MpvMediaPlayerBackend.__new__(MpvMediaPlayerBackend)
         backend._source_path = "video.mp4"
         backend._video_frozen = False
+        backend._state = QMediaPlayer.PlayingState
         backend._player = MagicMock()
         # Video media time is 2500 ms
         backend._player.time_pos = 2.5

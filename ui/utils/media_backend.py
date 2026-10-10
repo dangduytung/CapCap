@@ -1729,7 +1729,8 @@ class MpvMediaPlayerBackend(QObject):
             # Emitting pause() when video is in an initial paused/loaded state
             # floods the cross-thread signal queue with stale pause() calls that
             # then override any subsequent play() call, silencing audio entirely.
-            if self._state == QMediaPlayer.PlayingState:
+            current_state = getattr(self, "_state", QMediaPlayer.PausedState)
+            if current_state == QMediaPlayer.PlayingState:
                 if v_paused:
                     self._native_audio_engine.pause()
                 else:
@@ -1745,8 +1746,8 @@ class MpvMediaPlayerBackend(QObject):
 
             threshold_ms = 300
             drift = abs(expected_a_pos_ms - a_pos)
-            self.log(f"[AudioSync] _sync_audio_to_video: state={self._state}, v_paused={v_paused}, v_pos={v_pos_ms}, a_pos={a_pos}, drift={drift}, seek={'YES' if drift > threshold_ms else 'NO'}")
-            if self._state == QMediaPlayer.PlayingState and drift > threshold_ms:
+            self.log(f"[AudioSync] _sync_audio_to_video: state={current_state}, v_paused={v_paused}, v_pos={v_pos_ms}, a_pos={a_pos}, drift={drift}, seek={'YES' if drift > threshold_ms else 'NO'}")
+            if current_state == QMediaPlayer.PlayingState and drift > threshold_ms:
                 self._native_audio_engine.seek(expected_a_pos_ms)
             return
 
@@ -1809,8 +1810,9 @@ class MpvMediaPlayerBackend(QObject):
 
     def log(self, text):
         # We can reach out to the gui if needed
-        if hasattr(self.video_view, "parent") and hasattr(self.video_view.parent(), "log"):
-             self.video_view.parent().log(text)
+        video_view = getattr(self, "video_view", None)
+        if video_view is not None and hasattr(video_view, "parent") and hasattr(video_view.parent(), "log"):
+             video_view.parent().log(text)
         elif hasattr(self, "gui") and hasattr(self.gui, "log"):
              self.gui.log(text)
 

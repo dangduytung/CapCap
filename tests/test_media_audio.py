@@ -785,6 +785,7 @@ class TestPreviewAudioEngine(unittest.TestCase):
     def test_sync_audio_to_video_tolerance_threshold(self):
         """Ensure media_backend desync tolerance avoids seeking unless desync > 300ms."""
         from unittest.mock import MagicMock
+        from PySide6.QtMultimedia import QMediaPlayer
         from ui.utils.media_backend import MpvMediaPlayerBackend
 
         backend = MpvMediaPlayerBackend.__new__(MpvMediaPlayerBackend)
@@ -795,6 +796,7 @@ class TestPreviewAudioEngine(unittest.TestCase):
         backend._original_loaded_path = ""
         backend._dubbed_loaded_path = ""
         backend._video_time_warps = []
+        backend._state = QMediaPlayer.PlayingState
 
         mock_player = MagicMock()
         mock_player.time_pos = 10.0  # 10,000 ms
