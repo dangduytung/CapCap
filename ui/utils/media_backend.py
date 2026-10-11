@@ -1699,6 +1699,28 @@ class MpvMediaPlayerBackend(QObject):
             return
         if (time.monotonic() - getattr(self, "_last_seek_mono", 0.0)) < 0.25:
             return
+
+        # When video is paused and native audio is active, skip sync unless
+        # there is a large drift that needs correcting (e.g. audio runaway at EOF).
+        current_state = getattr(self, "_state", QMediaPlayer.PausedState)
+        native_active = getattr(self, "_native_audio_active", False) and self._native_audio_engine is not None
+        if native_active and current_state != QMediaPlayer.PlayingState:
+            try:
+                v_time = self._player.time_pos
+                if v_time is None:
+                    return
+                v_pos_ms = int(float(v_time) * 1000)
+                a_pos = self._native_audio_engine.timeline_position_ms()
+                warps = getattr(self, "_video_time_warps", [])
+                if warps:
+                    from app.services.time_warp_service import TimeWarpService
+                    expected_a_pos_ms = int(round(TimeWarpService.media_to_timeline_time(v_pos_ms / 1000.0, warps) * 1000.0))
+                else:
+                    expected_a_pos_ms = v_pos_ms
+                if abs(a_pos - expected_a_pos_ms) <= 300:
+                    return
+            except Exception:
+                return
         try:
             v_time = self._player.time_pos
             if v_time is None:

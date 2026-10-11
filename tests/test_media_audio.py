@@ -821,6 +821,41 @@ class TestPreviewAudioEngine(unittest.TestCase):
         backend._sync_audio_to_video()
         mock_engine.seek.assert_called_once_with(10000)
 
+    def test_sync_audio_to_video_paused_skips_when_in_tolerance(self):
+        """Ensure _sync_audio_to_video returns early when paused and drift <= 300ms, but corrects when drift > 300ms."""
+        from unittest.mock import MagicMock
+        from PySide6.QtMultimedia import QMediaPlayer
+        from ui.utils.media_backend import MpvMediaPlayerBackend
+
+        backend = MpvMediaPlayerBackend.__new__(MpvMediaPlayerBackend)
+        backend._source_path = "test.mp4"
+        backend._video_frozen = False
+        backend._last_seek_mono = 0.0
+        backend._native_audio_active = True
+        backend._original_loaded_path = ""
+        backend._dubbed_loaded_path = ""
+        backend._video_time_warps = []
+        backend._state = QMediaPlayer.PausedState
+
+        mock_player = MagicMock()
+        mock_player.time_pos = 10.0  # 10,000 ms
+        mock_player.pause = True
+        backend._player = mock_player
+
+        mock_engine = MagicMock()
+        backend._native_audio_engine = mock_engine
+
+        # Case 1: Audio is at 9850 ms (150 ms desync) while paused -> early returns, no seek
+        mock_engine.timeline_position_ms.return_value = 9850
+        backend._sync_audio_to_video()
+        mock_engine.seek.assert_not_called()
+
+        # Case 2: Audio is at 9200 ms (800 ms desync) while paused -> corrects drift
+        mock_engine.timeline_position_ms.return_value = 9200
+        backend._sync_audio_to_video()
+        mock_engine.seek.assert_called_once_with(10000)
+        mock_engine.pause.assert_called_once()
+
     def test_pyav_audio_reader_seek_past_eof_and_gap(self):
         """Ensure AudioReader seeking past EOF or over gaps does not raise EOFError or TypeError."""
         import av
