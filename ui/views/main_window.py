@@ -141,6 +141,9 @@ def _build_header_bar(gui):
 
     gui.preview_5s_action = None
     more_menu.addSeparator()
+    gui.workspace_layout_toggle_action = more_menu.addAction(t("Switch to portrait layout (9:16)"))
+    gui.workspace_layout_toggle_action.triggered.connect(gui.toggle_workspace_layout_mode)
+    more_menu.addSeparator()
     gui.clean_project_action = more_menu.addAction("Clean")
     gui.clean_project_action.triggered.connect(gui.clean_current_project)
     gui.exit_project_action = more_menu.addAction("Exit")

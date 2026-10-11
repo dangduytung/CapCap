@@ -3,7 +3,7 @@ import os
 import os
 
 from PySide6 import QtCore
-from PySide6.QtCore import QRectF, QSize, Qt, Signal, QTimer
+from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -56,6 +56,66 @@ def _set_preview_icon_button(button: QPushButton, icon_path: str, tooltip: str):
     button.setIcon(load_icon(icon_path, 18))
     button.setIconSize(QSize(18, 18))
     button.setStyleSheet("QPushButton { padding: 0; }")
+
+
+class _ButtonStateSyncFilter(QtCore.QObject):
+    def __init__(self, target_button):
+        super().__init__(target_button)
+        self._target_button = target_button
+
+    def eventFilter(self, watched, event):
+        if event.type() == QtCore.QEvent.EnabledChange:
+            try:
+                self._target_button.setEnabled(watched.isEnabled())
+            except Exception:
+                pass
+        return False
+
+
+def _sync_button_state(source_button, target_button):
+    if source_button is not None and target_button is not None:
+        target_button.setEnabled(source_button.isEnabled())
+        flt = _ButtonStateSyncFilter(target_button)
+        source_button.installEventFilter(flt)
+        target_button._sync_filter = flt
+
+
+def _make_vertical_layer_btn(text: str, color: str, tooltip: str, checkable: bool = False) -> QPushButton:
+    btn = QPushButton(text)
+    btn.setFixedSize(36, 30)
+    btn.setToolTip(tooltip)
+    btn.setCheckable(checkable)
+    font_size = "13px" if len(text) <= 2 else "10px"
+    btn.setStyleSheet(f"""
+        QPushButton {{
+            background: #182637;
+            color: {color};
+            border: 1px solid #283e58;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: {font_size};
+            padding: 0;
+        }}
+        QPushButton:hover {{
+            background: #23374f;
+            border-color: #3b5a80;
+        }}
+        QPushButton:pressed {{
+            background: #121c29;
+            border-color: #6ee7d6;
+        }}
+        QPushButton:disabled {{
+            background: #101924;
+            border-color: #1a2838;
+            color: #4b5d73;
+        }}
+        QPushButton:checked {{
+            background: #3b2557;
+            border-color: #a855f7;
+            color: #ffffff;
+        }}
+    """)
+    return btn
 
 
 class OcrRegionOverlay(QWidget):
@@ -854,12 +914,192 @@ def _build_timeline_track_labels(timeline):
     return TimelineTrackLabels(timeline)
 
 
+def apply_workspace_layout_mode(gui, mode: str):
+    target_mode = "portrait" if str(mode or "").strip().lower() == "portrait" else "landscape"
+    prev_mode = getattr(gui, "_applied_workspace_layout_mode", None)
+    gui._workspace_layout_mode = target_mode
+    gui._applied_workspace_layout_mode = target_mode
+
+    preview_card = getattr(gui, "preview_card", None)
+    inspector_shell = getattr(gui, "subtitle_inspector_shell", None)
+    timeline_card = getattr(gui, "timeline_card", None)
+    workspace_widget = getattr(gui, "preview_workspace_widget", None)
+    workspace_row = getattr(gui, "preview_workspace_layout", None)
+    preview_timeline_splitter = getattr(gui, "preview_timeline_splitter", None)
+    portrait_workspace_splitter = getattr(gui, "portrait_workspace_splitter", None)
+    portrait_preview_widget = getattr(gui, "portrait_preview_widget", None)
+    portrait_preview_layout = getattr(gui, "portrait_preview_layout", None)
+    portrait_top_deck = getattr(gui, "portrait_top_deck", None)
+    portrait_top_deck_layout = getattr(gui, "portrait_top_deck_layout", None)
+    right_layout = getattr(gui, "right_layout", None)
+    vertical_toolbar = getattr(gui, "vertical_layer_toolbar", None)
+    blur_group_widget = getattr(gui, "preview_blur_group_widget", None)
+    transport_blur_sep = getattr(gui, "preview_transport_blur_sep", None)
+    inspector_collapse_tab = getattr(gui, "inspector_collapse_tab", None)
+
+    if (
+        preview_card is None
+        or inspector_shell is None
+        or timeline_card is None
+        or workspace_widget is None
+        or workspace_row is None
+        or preview_timeline_splitter is None
+        or portrait_workspace_splitter is None
+        or portrait_preview_widget is None
+        or portrait_preview_layout is None
+        or portrait_top_deck is None
+        or portrait_top_deck_layout is None
+        or right_layout is None
+    ):
+        return
+
+    if target_mode == "portrait":
+        if vertical_toolbar is not None:
+            vertical_toolbar.setVisible(True)
+        if blur_group_widget is not None:
+            blur_group_widget.setVisible(False)
+        if transport_blur_sep is not None:
+            transport_blur_sep.setVisible(False)
+        if inspector_collapse_tab is not None:
+            inspector_collapse_tab.setVisible(False)
+
+        preview_card.setMinimumWidth(380)
+        preview_card.setMaximumWidth(520)
+        preview_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+
+        inspector_shell.setMinimumWidth(200)
+        inspector_shell.setMaximumWidth(16777215)
+        inspector_shell.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        if hasattr(gui, "inspector_stack") and gui.inspector_stack is not None:
+            gui.inspector_stack.setMaximumWidth(16777215)
+        for attr in (
+            "subtitle_inspector_card",
+            "audio_inspector_card",
+            "blur_inspector_card",
+            "video_inspector_card",
+            "default_inspector_card",
+            "logo_inspector_card",
+            "mask_inspector_card",
+            "text_inspector_card",
+        ):
+            card = getattr(gui, attr, None)
+            if card is not None:
+                card.setMaximumWidth(16777215)
+
+        if prev_mode != "portrait":
+            right_layout.removeWidget(preview_timeline_splitter)
+            workspace_row.removeWidget(preview_card)
+            workspace_row.removeWidget(inspector_shell)
+
+            # Middle column: inspector above the timeline.
+            portrait_top_deck_layout.addWidget(inspector_shell, 1)
+            if vertical_toolbar is not None:
+                portrait_top_deck_layout.addWidget(vertical_toolbar)
+                vertical_toolbar.show()
+
+            preview_timeline_splitter.replaceWidget(0, portrait_top_deck)
+            workspace_widget.hide()
+
+            portrait_preview_layout.addWidget(preview_card, 1)
+
+            portrait_workspace_splitter.addWidget(preview_timeline_splitter)
+            portrait_workspace_splitter.addWidget(portrait_preview_widget)
+            portrait_workspace_splitter.setStretchFactor(0, 1)
+            portrait_workspace_splitter.setStretchFactor(1, 0)
+            right_layout.addWidget(portrait_workspace_splitter, 1)
+            portrait_workspace_splitter.show()
+
+            # Compact action buttons in inspector: move import_btn and regen_btn to actions_row
+            actions_row = getattr(gui, "inspector_actions_row", None)
+            voice_row = getattr(gui, "inspector_voice_actions_row", None)
+            import_btn = getattr(gui, "import_translation_btn", None)
+            regen_btn = getattr(gui, "audio_inspector_regenerate_voice_btn", None)
+            if actions_row is not None and voice_row is not None and import_btn is not None and regen_btn is not None:
+                voice_row.removeWidget(import_btn)
+                voice_row.removeWidget(regen_btn)
+                # insert before the stretch at the end
+                pos = max(0, actions_row.count() - 1)
+                actions_row.insertWidget(pos, import_btn)
+                actions_row.insertWidget(pos + 1, regen_btn)
+
+        if hasattr(gui, "_set_default_preview_timeline_sizes"):
+            gui._set_default_preview_timeline_sizes()
+
+    else:
+        if vertical_toolbar is not None:
+            vertical_toolbar.setVisible(False)
+        if blur_group_widget is not None:
+            blur_group_widget.setVisible(True)
+        if transport_blur_sep is not None:
+            transport_blur_sep.setVisible(True)
+        if inspector_collapse_tab is not None:
+            inspector_collapse_tab.setVisible(True)
+
+        preview_card.setMinimumWidth(0)
+        preview_card.setMaximumWidth(16777215)
+        preview_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        if hasattr(gui, "inspector_stack") and gui.inspector_stack is not None:
+            gui.inspector_stack.setMaximumWidth(600)
+        card_max_widths = {
+            "subtitle_inspector_card": 600,
+            "audio_inspector_card": 560,
+            "blur_inspector_card": 560,
+            "video_inspector_card": 560,
+            "default_inspector_card": 560,
+            "logo_inspector_card": 560,
+            "mask_inspector_card": 560,
+            "text_inspector_card": 560,
+        }
+        for attr, max_w in card_max_widths.items():
+            card = getattr(gui, attr, None)
+            if card is not None:
+                card.setMaximumWidth(max_w)
+
+        if prev_mode == "portrait":
+            if vertical_toolbar is not None:
+                vertical_toolbar.hide()
+                portrait_top_deck_layout.removeWidget(vertical_toolbar)
+            portrait_top_deck_layout.removeWidget(inspector_shell)
+            portrait_preview_layout.removeWidget(preview_card)
+            portrait_workspace_splitter.hide()
+            right_layout.removeWidget(portrait_workspace_splitter)
+
+            workspace_row.addWidget(preview_card, 2)
+            workspace_row.addWidget(inspector_shell, 3)
+            preview_timeline_splitter.replaceWidget(0, workspace_widget)
+            right_layout.addWidget(preview_timeline_splitter, 1)
+            workspace_widget.show()
+            preview_timeline_splitter.show()
+
+            # Restore action buttons to voice_row
+            actions_row = getattr(gui, "inspector_actions_row", None)
+            voice_row = getattr(gui, "inspector_voice_actions_row", None)
+            import_btn = getattr(gui, "import_translation_btn", None)
+            regen_btn = getattr(gui, "audio_inspector_regenerate_voice_btn", None)
+            if actions_row is not None and voice_row is not None and import_btn is not None and regen_btn is not None:
+                actions_row.removeWidget(import_btn)
+                actions_row.removeWidget(regen_btn)
+                voice_row.insertWidget(0, import_btn)
+                voice_row.insertWidget(1, regen_btn)
+
+        if hasattr(gui, "_sync_subtitle_inspector_shell_width"):
+            try:
+                gui._sync_subtitle_inspector_shell_width()
+            except Exception:
+                pass
+
+        if hasattr(gui, "_set_default_preview_timeline_sizes"):
+            gui._set_default_preview_timeline_sizes()
+
+
 def build_preview_panel(gui):
     right_panel = QWidget()
     right_panel.setObjectName("rightPanel")
     right_layout = QVBoxLayout(right_panel)
     right_layout.setContentsMargins(0, 0, 0, 0)
     right_layout.setSpacing(10)
+    gui.right_layout = right_layout
 
     gui.preview_context_label = QLabel("Choose a video to start previewing. Subtitle and voice status will appear here as you work.")
     gui.preview_context_label.setWordWrap(True)
@@ -958,6 +1198,7 @@ def build_preview_panel(gui):
     preview_card = QFrame()
     preview_card.setObjectName("statusCard")
     preview_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    gui.preview_card = preview_card
     preview_card_layout = QVBoxLayout(preview_card)
     preview_card_layout.setContentsMargins(12, 12, 12, 10)
     preview_card_layout.setSpacing(8)
@@ -1026,7 +1267,9 @@ def build_preview_panel(gui):
     play_group.addWidget(gui.stop_btn)
     play_group.addWidget(gui.preview_btn)
 
-    blur_group = QHBoxLayout()
+    gui.preview_blur_group_widget = QWidget()
+    blur_group = QHBoxLayout(gui.preview_blur_group_widget)
+    blur_group.setContentsMargins(0, 0, 0, 0)
     blur_group.setSpacing(6)
     # The blur ON/OFF toggle is controlled by clicking the B1
     # track label in the timeline's left strip (like audio mute).
@@ -1071,19 +1314,68 @@ def build_preview_panel(gui):
     blur_group.addWidget(gui.ocr_region_btn)
     blur_group.addWidget(gui.ocr_translator_btn)
 
+    # Vertical Layer Toolbar (beside the inspector in portrait mode)
+    vertical_toolbar = QFrame(right_panel)
+    vertical_toolbar.setObjectName("verticalLayerToolbar")
+    vertical_toolbar.setFixedWidth(46)
+    vertical_toolbar.setMinimumHeight(204)
+    vertical_toolbar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+    vertical_toolbar.setStyleSheet(
+        "QFrame#verticalLayerToolbar { background: #131f2f; border: 1px solid #1e3148; border-radius: 8px; }"
+    )
+    v_toolbar_layout = QVBoxLayout(vertical_toolbar)
+    v_toolbar_layout.setContentsMargins(5, 8, 5, 8)
+    v_toolbar_layout.setSpacing(8)
+    v_toolbar_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+
+    gui.vertical_text_btn = _make_vertical_layer_btn("T", "#c084fc", "Add editable text to the video")
+    gui.vertical_logo_btn = _make_vertical_layer_btn("Logo", "#6ee7d6", "Add a logo or watermark image to the video")
+    gui.vertical_blur_btn = _make_vertical_layer_btn("Blur", "#ffc15e", "Add a blur region")
+    gui.vertical_mask_btn = _make_vertical_layer_btn("Mask", "#c98c5a", "Add a rectangular mask to the video")
+    gui.vertical_ocr_btn = _make_vertical_layer_btn("OCR", "#d8b4fe", "Capture and translate visual text from the current video frame", checkable=True)
+
+    gui.vertical_text_btn.clicked.connect(lambda: gui.add_text_btn.click() if hasattr(gui, "add_text_btn") else None)
+    gui.vertical_logo_btn.clicked.connect(lambda: gui.add_logo_btn.click() if hasattr(gui, "add_logo_btn") else None)
+    gui.vertical_blur_btn.clicked.connect(lambda: gui.blur_add_btn.click() if hasattr(gui, "blur_add_btn") else None)
+    gui.vertical_mask_btn.clicked.connect(lambda: gui.add_mask_btn.click() if hasattr(gui, "add_mask_btn") else None)
+    gui.vertical_ocr_btn.clicked.connect(lambda: gui.ocr_translator_btn.click() if hasattr(gui, "ocr_translator_btn") else None)
+
+    _sync_button_state(gui.add_text_btn, gui.vertical_text_btn)
+    _sync_button_state(gui.add_logo_btn, gui.vertical_logo_btn)
+    _sync_button_state(gui.blur_add_btn, gui.vertical_blur_btn)
+    _sync_button_state(gui.add_mask_btn, gui.vertical_mask_btn)
+    _sync_button_state(gui.ocr_translator_btn, gui.vertical_ocr_btn)
+
+    if hasattr(gui, "ocr_translator_btn"):
+        gui.ocr_translator_btn.toggled.connect(gui.vertical_ocr_btn.setChecked)
+
+    v_toolbar_layout.addWidget(gui.vertical_text_btn)
+    v_toolbar_layout.addWidget(gui.vertical_logo_btn)
+    v_toolbar_layout.addWidget(gui.vertical_blur_btn)
+    v_toolbar_layout.addWidget(gui.vertical_mask_btn)
+    v_toolbar_layout.addWidget(gui.vertical_ocr_btn)
+    v_toolbar_layout.addStretch(1)
+
+    vertical_toolbar.hide()
+    gui.vertical_layer_toolbar = vertical_toolbar
+
     speed_group = QHBoxLayout()
     speed_group.setSpacing(6)
     speed_group.addStretch(0)
     speed_group.addWidget(QLabel("Speed"))
     speed_group.addWidget(gui.preview_speed_combo)
 
+    transport_sep1 = _make_sep()
+    transport_sep2 = _make_sep()
+    gui.preview_transport_blur_sep = transport_sep2
+
     transport_row = QHBoxLayout()
     transport_row.setContentsMargins(0, 0, 0, 0)
     transport_row.setSpacing(10)
     transport_row.addLayout(play_group)
-    transport_row.addWidget(_make_sep())
-    transport_row.addLayout(blur_group)
-    transport_row.addWidget(_make_sep())
+    transport_row.addWidget(transport_sep1)
+    transport_row.addWidget(gui.preview_blur_group_widget)
+    transport_row.addWidget(transport_sep2)
     transport_row.addLayout(speed_group, 1)
     transport_row.addWidget(gui.time_label)
     preview_card_layout.addLayout(transport_row)
@@ -1477,6 +1769,7 @@ def build_preview_panel(gui):
     inspector_actions_row.addWidget(gui.normalizer_dict_btn)
     inspector_actions_row.addStretch(1)
     inspector_layout.addLayout(inspector_actions_row)
+    gui.inspector_actions_row = inspector_actions_row
 
     # Keep the voice-generation action on its own row.  The other subtitle
     # review actions can have long labels as well, and placing all of them in
@@ -2169,36 +2462,124 @@ def build_preview_panel(gui):
             gui._constraining_preview_timeline_splitter = False
 
     gui.preview_timeline_splitter.splitterMoved.connect(_keep_timeline_accessible)
+
+    portrait_top_deck = QWidget()
+    portrait_top_deck.setObjectName("portraitTopDeck")
+    portrait_top_deck_layout = QHBoxLayout(portrait_top_deck)
+    portrait_top_deck_layout.setContentsMargins(0, 0, 0, 0)
+    portrait_top_deck_layout.setSpacing(6)
+    gui.portrait_top_deck = portrait_top_deck
+    gui.portrait_top_deck_layout = portrait_top_deck_layout
+
+    portrait_preview_widget = QWidget()
+    portrait_preview_widget.setObjectName("portraitPreviewWidget")
+    portrait_preview_layout = QHBoxLayout(portrait_preview_widget)
+    portrait_preview_layout.setContentsMargins(0, 0, 0, 0)
+    portrait_preview_layout.setSpacing(8)
+    gui.portrait_preview_widget = portrait_preview_widget
+    gui.portrait_preview_layout = portrait_preview_layout
+
+    portrait_workspace_splitter = QSplitter(Qt.Horizontal)
+    portrait_workspace_splitter.setObjectName("portraitWorkspaceSplitter")
+    portrait_workspace_splitter.setChildrenCollapsible(False)
+    portrait_workspace_splitter.setOpaqueResize(True)
+    portrait_workspace_splitter.setHandleWidth(7)
+    portrait_workspace_splitter.setStyleSheet(
+        "QSplitter::handle { background: #1b2a3d; margin: 0 2px; }"
+        "QSplitter::handle:hover { background: #3a6289; }"
+    )
+    portrait_workspace_splitter.hide()
+    gui.portrait_workspace_splitter = portrait_workspace_splitter
+
     right_layout.addWidget(gui.preview_timeline_splitter, 1)
 
+    _orig_sync_inspector_width = getattr(gui, "_sync_subtitle_inspector_shell_width", None)
+
+    def _adaptive_sync_inspector_shell_width(visible=None):
+        if getattr(gui, "_workspace_layout_mode", "landscape") == "portrait":
+            shell = getattr(gui, "subtitle_inspector_shell", None)
+            if shell is not None:
+                shell.setMinimumWidth(200)
+                shell.setMaximumWidth(16777215)
+                shell.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            return
+        if callable(_orig_sync_inspector_width):
+            _orig_sync_inspector_width(visible)
+
+    gui._sync_subtitle_inspector_shell_width = _adaptive_sync_inspector_shell_width
+
     def _set_default_preview_timeline_sizes():
+        mode = getattr(gui, "_workspace_layout_mode", "landscape")
         splitter = gui.preview_timeline_splitter
         parent = splitter.parent()
         if parent is not None and parent.layout() is not None:
             parent.layout().activate()
-        available = sum(splitter.sizes()) or splitter.height()
-        if available > 0:
-            min_timeline = int(
-                getattr(gui, "_responsive_timeline_minimum_height", 360) or 360
-            )
-            # Give the preview generous vertical room (~58-60%) so 16:9 and 9:16
-            # videos fill the workspace comfortably, while guaranteeing the
-            # timeline remains fully accessible at or above its minimum height.
-            timeline_height = max(min_timeline, int(round(available * 0.45)))
-            preview_height = max(1, available - timeline_height)
-            splitter.setSizes([preview_height, timeline_height])
-            w0 = splitter.widget(0)
-            if w0 is not None:
-                w0.resize(splitter.width(), preview_height)
-                if w0.layout() is not None:
-                    w0.layout().activate()
-                for idx in range(w0.layout().count() if w0.layout() else 0):
-                    item = w0.layout().itemAt(idx)
-                    child_w = item.widget() if item else None
-                    if child_w and child_w.layout():
-                        child_w.layout().activate()
+        min_timeline = int(
+            getattr(gui, "_responsive_timeline_minimum_height", 360) or 360
+        )
+        if mode == "portrait":
+            port_splitter = getattr(gui, "portrait_workspace_splitter", None)
+            if port_splitter is not None:
+                p_parent = port_splitter.parent()
+                if p_parent is not None and p_parent.layout() is not None:
+                    p_parent.layout().activate()
+                avail_w = sum(port_splitter.sizes()) or port_splitter.width()
+                if avail_w > 0:
+                    preview_col_w = min(520, max(440, int(round(avail_w * 0.38))))
+                    middle_col_w = max(300, avail_w - preview_col_w)
+                    port_splitter.setSizes([middle_col_w, preview_col_w])
+
+            available = sum(splitter.sizes()) or splitter.height()
+            if available > 0:
+                inspector_height = min(400, max(1, available - min_timeline))
+                timeline_height = max(min_timeline, available - inspector_height)
+                splitter.setSizes([inspector_height, timeline_height])
+                w0 = splitter.widget(0)
+                if w0 is not None:
+                    w0.resize(splitter.width(), inspector_height)
+                    if w0.layout() is not None:
+                        w0.layout().activate()
+        else:
+            available = sum(splitter.sizes()) or splitter.height()
+            if available > 0:
+                timeline_height = max(min_timeline, int(round(available * 0.45)))
+                preview_height = max(1, available - timeline_height)
+                splitter.setSizes([preview_height, timeline_height])
+                w0 = splitter.widget(0)
+                if w0 is not None:
+                    w0.resize(splitter.width(), preview_height)
+                    if w0.layout() is not None:
+                        w0.layout().activate()
+                    for idx in range(w0.layout().count() if w0.layout() else 0):
+                        item = w0.layout().itemAt(idx)
+                        child_w = item.widget() if item else None
+                        if child_w and child_w.layout():
+                            child_w.layout().activate()
+
+        if hasattr(gui, "_sync_canvas_bound_overlays"):
+            try:
+                gui._sync_canvas_bound_overlays()
+            except Exception:
+                pass
 
     # MainWindow calls this from its first show event, when the splitter has
     # real dimensions but before the editor's first visible paint.
     gui._set_default_preview_timeline_sizes = _set_default_preview_timeline_sizes
+    gui._apply_workspace_layout_mode = lambda mode: apply_workspace_layout_mode(gui, mode)
+    orig_set_mode = getattr(gui, "set_workspace_layout_mode", None)
+
+    def _set_mode(mode: str):
+        if callable(orig_set_mode):
+            orig_set_mode(mode)
+        else:
+            apply_workspace_layout_mode(gui, mode)
+
+    gui.set_workspace_layout_mode = _set_mode
+    gui._workspace_layout_mode = "landscape"
+    gui._applied_workspace_layout_mode = "landscape"
+
+    initial_mode = getattr(gui, "_workspace_layout_mode", "landscape")
+    if initial_mode == "portrait":
+        apply_workspace_layout_mode(gui, "portrait")
+
     return right_panel

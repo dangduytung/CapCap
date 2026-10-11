@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QProgressBar, QFrame, QGraphicsOpacityEffect,
     QPushButton
 )
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QEvent
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QEvent, Signal
 from PySide6.QtGui import QPainter, QColor
 
 try:
@@ -21,6 +21,8 @@ except ImportError:
 
 class MainWindowLoadingOverlay(QWidget):
     """Semi-opaque or solid overlay inside MainWindow that displays a smooth loading indicator."""
+
+    dismissed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -210,3 +212,7 @@ class MainWindowLoadingOverlay(QWidget):
             self.setGraphicsEffect(None)
         except Exception:
             pass
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.dismissed.emit()

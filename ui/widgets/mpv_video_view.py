@@ -1607,6 +1607,7 @@ class MpvVideoView(QWidget):
                 _win.installEventFilter(self)
         win = self.window()
         is_loading = getattr(win, "_project_loading_in_progress", False)
+        self.video_surface.setGeometry(self._video_surface_rect())
         self.video_surface.setVisible(not is_loading)
         self._sync_preview_stack()
         self._update_ratio_badge()

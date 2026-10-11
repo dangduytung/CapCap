@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 import re
+import sys
 from typing import Any
+
+# Ensure both 'i18n' and 'ui.i18n' resolve to the exact same module object in sys.modules
+# so module-level state (_current_language) never diverges between import styles.
+if "ui.i18n" not in sys.modules:
+    sys.modules["ui.i18n"] = sys.modules[__name__]
+if "i18n" not in sys.modules:
+    sys.modules["i18n"] = sys.modules[__name__]
 
 
 DEFAULT_LANGUAGE = "en"
@@ -24,6 +32,9 @@ VI_TRANSLATIONS: dict[str, str] = {
     "Project cache ready!": "Bộ đệm dự án đã sẵn sàng!",
     "Ready to open project!": "Sẵn sàng mở dự án!",
     "Loading project & initializing player...": "Đang tải dự án & khởi tạo trình phát...",
+    "Switching layout...": "Đang chuyển bố cục...",
+    "Switch to portrait layout (9:16)": "Chuyển sang bố cục video dọc (9:16)",
+    "Switch to landscape layout (16:9)": "Chuyển sang bố cục video ngang (16:9)",
     "Extracting timeline waveform and thumbnails...": "Đang trích xuất waveform và khung hình Timeline...",
     "SenseVoice is not detected yet. You can continue to the Main UI; download SenseVoice from Manage Resources before using it for transcription.": "Chưa phát hiện SenseVoice. Bạn vẫn có thể mở giao diện chính; hãy tải SenseVoice từ Quản lý tài nguyên trước khi dùng để chép lời.",
     "{prefix} {labels}. Open Manage Resources to set them up.": "{prefix} {labels}. Mở Quản lý tài nguyên để cài đặt.",

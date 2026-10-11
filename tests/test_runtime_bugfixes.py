@@ -2370,26 +2370,32 @@ class TestRuntimeBugfixes(unittest.TestCase):
     def test_voiceover_progress_updates_dialog_even_without_percent(self):
         from unittest.mock import MagicMock
         from ui.main_window import VideoTranslatorGUI
+        from ui.i18n import get_language, set_language
 
-        gui = MagicMock()
-        gui.log = MagicMock()
-        gui.pipeline_controller = MagicMock()
-        dlg = MagicMock()
-        dlg.isVisible.return_value = True
-        step_mock = MagicMock()
-        dlg.steps = {"voiceover": step_mock}
-        dlg.step_order = ["ai_process", "voiceover", "preview"]
-        gui.pipeline_controller.progress_dialog = dlg
+        orig_lang = get_language()
+        try:
+            set_language("vi")
+            gui = MagicMock()
+            gui.log = MagicMock()
+            gui.pipeline_controller = MagicMock()
+            dlg = MagicMock()
+            dlg.isVisible.return_value = True
+            step_mock = MagicMock()
+            dlg.steps = {"voiceover": step_mock}
+            dlg.step_order = ["ai_process", "voiceover", "preview"]
+            gui.pipeline_controller.progress_dialog = dlg
 
-        # Case 1: Informational message without percent (e.g. Loading VieNeu-TTS)
-        VideoTranslatorGUI._on_voiceover_progress(gui, "Loading VieNeu-TTS v3 Turbo (ONNX)...")
-        dlg.footer.setText.assert_called_with("Đang tải mô hình VieNeu-TTS v3 Turbo (ONNX)...")
+            # Case 1: Informational message without percent (e.g. Loading VieNeu-TTS)
+            VideoTranslatorGUI._on_voiceover_progress(gui, "Loading VieNeu-TTS v3 Turbo (ONNX)...")
+            dlg.footer.setText.assert_called_with("Đang tải mô hình VieNeu-TTS v3 Turbo (ONNX)...")
 
-        # Case 2: Progress message with percent
-        dlg.footer.setText.reset_mock()
-        VideoTranslatorGUI._on_voiceover_progress(gui, "Synthesizing with voice 'Bao': 10/20 (50.0%)...")
-        step_mock.status_label.setText.assert_called_with("50%")
-        self.assertTrue(dlg.footer.setText.called)
+            # Case 2: Progress message with percent
+            dlg.footer.setText.reset_mock()
+            VideoTranslatorGUI._on_voiceover_progress(gui, "Synthesizing with voice 'Bao': 10/20 (50.0%)...")
+            step_mock.status_label.setText.assert_called_with("50%")
+            self.assertTrue(dlg.footer.setText.called)
+        finally:
+            set_language(orig_lang)
 
     def test_voice_workflow_manual_speed_bypasses_smart_and_force_fit(self):
         from unittest.mock import MagicMock
@@ -2617,6 +2623,121 @@ class TestRuntimeBugfixes(unittest.TestCase):
             self.assertIn("apply_segments", call_order)
             self.assertIn("sync_audio", call_order)
             self.assertLess(call_order.index("apply_segments"), call_order.index("sync_audio"))
+
+    def test_workspace_layout_mode_triggers_sync_segment_editor_rows(self):
+        from unittest.mock import MagicMock
+        from ui.main_window import VideoTranslatorGUI
+
+        gui = MagicMock()
+        gui.sync_segment_editor_rows = MagicMock()
+        gui._workspace_layout_mode = "landscape"
+        VideoTranslatorGUI.set_workspace_layout_mode(gui, "portrait")
+        self.assertEqual(gui._workspace_layout_mode, "portrait")
+        gui.sync_segment_editor_rows.assert_called_once()
+
+    def test_sync_segment_editor_rows_portrait_vs_landscape_layout(self):
+        from unittest.mock import MagicMock
+        from PySide6.QtWidgets import QWidget, QVBoxLayout, QTextEdit
+        from ui.main_window import VideoTranslatorGUI
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        gui = MagicMock()
+        gui.segment_editor_container = container
+        gui.segment_editor_layout = layout
+        gui._syncing_segment_editor = False
+        gui._is_subtitle_inspector_details_visible.return_value = True
+        gui.subtitle_inspector_card = None
+        gui._clear_segment_editor_rows = MagicMock()
+        sample_row = {
+            "segment_index": 0,
+            "start": 0.0,
+            "end": 2.0,
+            "original": "Hello",
+            "translated": "Xin chào",
+            "voice_speed": 1.0,
+            "extended_duration": 0.0,
+        }
+        gui._segment_editor_display_rows.return_value = [sample_row]
+        gui._get_effective_selected_segment_index.return_value = 0
+        gui.format_timestamp = lambda val: f"{val:.1f}s"
+        gui._detected_speaker_ids.return_value = []
+        gui.is_speaker_diarization_enabled.return_value = False
+        gui._get_segment_audio_end.return_value = 2.0
+
+        # Test Portrait Mode
+        gui._workspace_layout_mode = "portrait"
+        VideoTranslatorGUI.sync_segment_editor_rows(gui)
+        self.assertEqual(layout.count(), 1)
+        card = layout.itemAt(0).widget()
+        card_layout = card.layout()
+        # Find translated editor
+        editors = card.findChildren(QTextEdit)
+        self.assertEqual(len(editors), 1)
+        ed = editors[0]
+        self.assertEqual(ed.minimumHeight(), 64)
+        self.assertEqual(ed.maximumHeight(), 72)
+
+        # Clear container layout for landscape test
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Test Landscape Mode
+        gui._workspace_layout_mode = "landscape"
+        VideoTranslatorGUI.sync_segment_editor_rows(gui)
+        self.assertEqual(layout.count(), 1)
+        card_ls = layout.itemAt(0).widget()
+        editors_ls = card_ls.findChildren(QTextEdit)
+        self.assertEqual(len(editors_ls), 1)
+        ed_ls = editors_ls[0]
+        self.assertEqual(ed_ls.minimumHeight(), 96)
+        self.assertEqual(ed_ls.maximumHeight(), 96)
+
+    def test_load_video_project_defaults_portrait_for_tall_video(self):
+        from unittest.mock import MagicMock
+        from ui.main_window import VideoTranslatorGUI
+
+        gui = MagicMock()
+        gui._current_video_path = "tall_video.mp4"
+        gui.video_view.video_source_width = 1080
+        gui.video_view.video_source_height = 1920
+        gui._loading_overlay.isVisible.return_value = False
+
+        VideoTranslatorGUI.load_video_project(gui, "tall_video.mp4")
+        gui.set_workspace_layout_mode.assert_called_with("portrait")
+
+    def test_load_video_project_defaults_landscape_for_wide_video(self):
+        from unittest.mock import MagicMock
+        from ui.main_window import VideoTranslatorGUI
+
+        gui = MagicMock()
+        gui._current_video_path = "wide_video.mp4"
+        gui.video_view.video_source_width = 1920
+        gui.video_view.video_source_height = 1080
+        gui._loading_overlay.isVisible.return_value = False
+
+        VideoTranslatorGUI.load_video_project(gui, "wide_video.mp4")
+        gui.set_workspace_layout_mode.assert_called_with("landscape")
+
+    def test_workspace_layout_mode_not_persisted_to_project_cache(self):
+        from unittest.mock import MagicMock
+        from ui.main_window import VideoTranslatorGUI
+
+        gui = MagicMock()
+        gui._current_video_path = "video.mp4"
+        proj = MagicMock()
+        gui.current_project_state = proj
+        gui._workspace_layout_mode = "landscape"
+        gui._apply_workspace_layout_mode = MagicMock()
+        gui.sync_segment_editor_rows = MagicMock()
+
+        VideoTranslatorGUI.set_workspace_layout_mode(gui, "portrait")
+        self.assertEqual(gui._workspace_layout_mode, "portrait")
+        # Ensure set_setting was NOT called - layout mode is not cached into project.json
+        proj.set_setting.assert_not_called()
 
 
 if __name__ == "__main__":

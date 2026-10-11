@@ -103,9 +103,9 @@ from worker_adapters import (
 )
 
 try:
-    from i18n import current_source_text, localize_widget_tree, set_current_source_text, t
-except ImportError:
     from ui.i18n import current_source_text, localize_widget_tree, set_current_source_text, t
+except ImportError:
+    from i18n import current_source_text, localize_widget_tree, set_current_source_text, t
 
 # Import our backend modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'app'))
@@ -770,6 +770,8 @@ class VideoTranslatorGUI(QMainWindow):
         # restore edit chrome for the previously selected layer.
         self._preview_edit_layer_id = ""
         self._review_mode_active = False
+        self._workspace_layout_mode = "landscape"
+        self.workspace_layout_toggle_action = None
         # Overlay drags can emit dozens of events per second.  Persisting the
         # full project/timeline for each one causes synchronous JSON and
         # project-file writes on the UI thread, so collect rapid edits and
@@ -1091,7 +1093,10 @@ class VideoTranslatorGUI(QMainWindow):
         if left_panel is not None:
             left_panel.setFixedWidth(320 if compact_width else 420)
         inspector_width = 320 if compact_width else 400
-        inspector_max = 440 if compact_width else 560
+        inspector_max = (
+            16777215 if getattr(self, "_workspace_layout_mode", "landscape") == "portrait"
+            else 440 if compact_width else 560
+        )
         self._responsive_inspector_width = inspector_width
         for attr in (
             "subtitle_inspector_card", "audio_inspector_card", "blur_inspector_card",
@@ -5245,14 +5250,7 @@ class VideoTranslatorGUI(QMainWindow):
         # Always start a reopened project focused on the source video layer,
         # never on an optional overlay that happened to be restored first.
         try:
-            video_layer = None
-            for track in self.timeline._timeline.tracks:
-                if str(getattr(track, "name", "")) == "V1 Video" and track.layers:
-                    video_layer = track.layers[0]
-                    break
-            if video_layer is not None:
-                self.timeline.select_layer(video_layer.id)
-                self.on_timeline_layer_selected(video_layer.id)
+            self._select_video_layer_for_inspector()
         except Exception:
             pass
         # Reconnect optional timeline layers to their preview overlays after
@@ -6274,6 +6272,92 @@ class VideoTranslatorGUI(QMainWindow):
         if hasattr(self, "left_panel_scroll_area"):
             self.left_panel_scroll_area.setVisible(True)
         QTimer.singleShot(0, self._resync_preview_region_overlays)
+
+    def toggle_workspace_layout_mode(self):
+        if getattr(self, "_project_loading_in_progress", False):
+            return
+        current_mode = str(getattr(self, "_workspace_layout_mode", "landscape") or "landscape").lower()
+        target_mode = "portrait" if current_mode == "landscape" else "landscape"
+        freeze_timer = getattr(self, "_freeze_playback_timer", None)
+        freeze_active = bool(freeze_timer is not None and freeze_timer.isActive())
+        switch_started = time.monotonic()
+        if freeze_active:
+            freeze_timer.stop()
+        was_playing = bool(self.media_player.is_playing()) or freeze_active
+        if was_playing:
+            self.media_player.pause()
+        self.timeline.set_playing(False)
+        self.show_loading_overlay()
+        overlay = self._loading_overlay
+        overlay.set_status(t("Switching layout..."))
+        action = self.workspace_layout_toggle_action
+        action.setEnabled(False)
+        video_path = self._current_video_path
+
+        def _restore_preview():
+            if self._current_video_path != video_path:
+                action.setEnabled(True)
+                return
+            visible = self.isVisible()
+            if visible:
+                if hasattr(self.video_view, "video_surface"):
+                    self.video_view.set_video_dimensions(
+                        self.video_view.video_source_width, self.video_view.video_source_height
+                    )
+                self._sync_preview_framing_to_player()
+                self.repaint()
+            self._project_loading_in_progress = False
+            action.setEnabled(True)
+            if not visible:
+                return
+            if hasattr(self.video_view, "video_surface"):
+                self.video_view.video_surface.show()
+            self._timed_layer_preview_signature = None
+            self.refresh_timed_layer_preview()
+            self.sync_live_subtitle_preview()
+            if was_playing:
+                self.media_player.play()
+                if freeze_active and getattr(self, "_active_freeze_warp", None) is not None:
+                    self._freeze_start_mono += time.monotonic() - switch_started
+                    self.media_player.freeze_video_frame(self._freeze_anchor_ms)
+                    freeze_timer.start()
+                self.timeline.set_playing(True)
+
+        def _finish_switch():
+            overlay.dismissed.disconnect(_finish_switch)
+            # Drain native resize events and paint the editor before showing MPV.
+            QTimer.singleShot(100, _restore_preview)
+
+        overlay.dismissed.connect(_finish_switch)
+
+        def _apply_switch():
+            try:
+                self.set_workspace_layout_mode(target_mode)
+                self.apply_responsive_layout()
+                self._set_default_preview_timeline_sizes()
+            finally:
+                overlay.dismiss(fade=True)
+
+        QTimer.singleShot(50, _apply_switch)
+
+    def set_workspace_layout_mode(self, mode: str):
+        mode = str(mode or "landscape").lower()
+        self._workspace_layout_mode = mode
+        action = getattr(self, "workspace_layout_toggle_action", None)
+        if action is not None:
+            if mode == "portrait":
+                action.setText(t("Switch to landscape layout (16:9)"))
+            else:
+                action.setText(t("Switch to portrait layout (9:16)"))
+        # Delegate to preview_panel layout switcher if attached
+        switcher = getattr(self, "_apply_workspace_layout_mode", None)
+        if callable(switcher):
+            switcher(mode)
+        if hasattr(self, "sync_segment_editor_rows") and callable(self.sync_segment_editor_rows):
+            try:
+                self.sync_segment_editor_rows()
+            except Exception:
+                pass
 
     def _resync_preview_region_overlays(self):
         try:
@@ -8787,16 +8871,28 @@ class VideoTranslatorGUI(QMainWindow):
         if hasattr(self, "logo_inspector_rotation_slider"):
             self.logo_inspector_rotation_slider.valueChanged.connect(_on_rotation_changed)
 
+    def _select_video_layer_for_inspector(self):
+        timeline = getattr(self, "timeline", None)
+        model = getattr(timeline, "_timeline", None)
+        for track in getattr(model, "tracks", []) or []:
+            if str(getattr(track, "name", "")) == "V1 Video" and track.layers:
+                video_layer = track.layers[0]
+                timeline.select_layer(video_layer.id)
+                self.on_timeline_layer_selected(video_layer.id)
+                return
+
     def _show_video_inspector_for_track(self, track, layer=None):
         """Show the Video Track Inspector (V1 Video)."""
-        if not self._video_filter_inspector_available():
-            self._switch_inspector("default")
-            if hasattr(self, "default_inspector_summary_label"):
-                self.default_inspector_summary_label.setText(
+        self._switch_inspector("video")
+        available = self._video_filter_inspector_available()
+        if hasattr(self, "video_inspector_card"):
+            self.video_inspector_card.setEnabled(available)
+        if not available:
+            if hasattr(self, "video_inspector_summary_label"):
+                self.video_inspector_summary_label.setText(
                     t("Video Filter Inspector requires the gpu-next preview backend.")
                 )
             return
-        self._switch_inspector("video")
         if track is None:
             return
         if hasattr(self, "video_inspector_summary_label"):
@@ -11680,6 +11776,7 @@ class VideoTranslatorGUI(QMainWindow):
                 selected_index = int(visible_rows[0].get("segment_index", 0))
             self._update_subtitle_inspector_summary(rows)
 
+            is_portrait = getattr(self, "_workspace_layout_mode", "landscape") == "portrait"
             show_original = True
             for row in visible_rows:
                 idx = int(row.get("segment_index", 0))
@@ -11772,8 +11869,6 @@ class VideoTranslatorGUI(QMainWindow):
                 speaker_speed_row.addWidget(speed_spin)
                 if not (diarization_enabled and speaker_ids):
                     speaker_speed_row.addStretch()
-
-                card_layout.addLayout(speaker_speed_row)
 
                 # Video Freeze / Extension controls
                 ext_dur = float(row.get("extended_duration", 0.0) or 0.0)
@@ -11889,11 +11984,45 @@ class VideoTranslatorGUI(QMainWindow):
                     video_btn_row.addWidget(fit_voice_btn)
                     video_btn_row.addStretch()
 
-                card_layout.addLayout(video_ext_row)
-                if ext_dur <= 0.0:
-                    card_layout.addLayout(video_btn_row)
+                if is_portrait:
+                    compact_controls = QHBoxLayout()
+                    compact_controls.setContentsMargins(0, 0, 0, 0)
+                    compact_controls.setSpacing(10)
+                    # Add timing chips
+                    compact_controls.addWidget(start_label)
+                    compact_controls.addWidget(end_label)
+                    sep1 = QLabel("|")
+                    sep1.setStyleSheet("color: #2b3d52;")
+                    compact_controls.addWidget(sep1)
+                    # Add speaker / speed
+                    if diarization_enabled and speaker_ids:
+                        compact_controls.addWidget(speaker_indicator)
+                        compact_controls.addWidget(speaker_combo)
+                    compact_controls.addWidget(speed_label)
+                    compact_controls.addWidget(speed_spin)
+                    sep2 = QLabel("|")
+                    sep2.setStyleSheet("color: #2b3d52;")
+                    compact_controls.addWidget(sep2)
+                    # Add video extension controls
+                    if ext_dur > 0.0:
+                        compact_controls.addWidget(badge_lbl)
+                        compact_controls.addWidget(revert_btn)
+                    else:
+                        compact_controls.addWidget(ext_label)
+                        compact_controls.addWidget(ext_spin)
+                        compact_controls.addWidget(extend_slow_btn)
+                        compact_controls.addWidget(extend_btn)
+                        compact_controls.addWidget(fit_voice_btn)
+                    compact_controls.addStretch(1)
+                    card_layout.addLayout(compact_controls)
+                else:
+                    # Existing landscape logic
+                    card_layout.addLayout(speaker_speed_row)
+                    card_layout.addLayout(video_ext_row)
+                    if ext_dur <= 0.0:
+                        card_layout.addLayout(video_btn_row)
+                    card_layout.addLayout(timing_meta_layout)
 
-                card_layout.addLayout(timing_meta_layout)
                 card_layout.addWidget(original_label)
 
                 # The QTabWidget wrapper (with the "Subtitle" tab label
@@ -11904,8 +12033,12 @@ class VideoTranslatorGUI(QMainWindow):
                 translated_editor.setObjectName("segmentInspectorEditor")
                 translated_editor.setAcceptRichText(False)
                 translated_editor.setPlainText(row["translated"])
-                translated_editor.setMinimumHeight(96)
-                translated_editor.setMaximumHeight(96)
+                if is_portrait:
+                    translated_editor.setMinimumHeight(64)
+                    translated_editor.setMaximumHeight(72)
+                else:
+                    translated_editor.setMinimumHeight(96)
+                    translated_editor.setMaximumHeight(96)
                 translated_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
                 translated_editor.setPlaceholderText(t("Text shown on screen."))
                 translated_editor.textChanged.connect(
@@ -18283,6 +18416,25 @@ class VideoTranslatorGUI(QMainWindow):
                     redraw()
             self.schedule_timeline_visual_refresh(waveform=True, thumbnails=True)
 
+            # Probe video dimensions reliably (from video_view or directly from video_path)
+            w = 0
+            h = 0
+            try:
+                w = int(getattr(getattr(self, "video_view", None), "video_source_width", 0) or 0)
+                h = int(getattr(getattr(self, "video_view", None), "video_source_height", 0) or 0)
+            except (TypeError, ValueError):
+                w, h = 0, 0
+            if (w <= 0 or h <= 0) and video_path and os.path.exists(video_path):
+                try:
+                    from video_processor import get_video_dimensions
+                    w, h = get_video_dimensions(video_path)
+                except Exception:
+                    pass
+
+            target_mode = "portrait" if (h > 0 and w > 0 and h > w) else "landscape"
+            if hasattr(self, "set_workspace_layout_mode"):
+                self.set_workspace_layout_mode(target_mode)
+
             # 4. Resolve initial layout geometry while hidden so first paint is already settled
             self.prepare_initial_editor_layout()
 
@@ -18316,6 +18468,8 @@ class VideoTranslatorGUI(QMainWindow):
             # before MPV initializes and renders into the settled video canvas
             def _deferred_load_media():
                 try:
+                    if hasattr(self, "_set_default_preview_timeline_sizes"):
+                        self._set_default_preview_timeline_sizes()
                     if not getattr(self, '_media_backend_ready', False):
                         self.ensure_media_backend_ready()
                     self.media_player.setSource(QUrl.fromLocalFile(video_path))
@@ -18347,6 +18501,7 @@ class VideoTranslatorGUI(QMainWindow):
                         self._timed_layer_preview_signature = None
                         if hasattr(self, "refresh_timed_layer_preview"):
                             self.refresh_timed_layer_preview()
+                        self._select_video_layer_for_inspector()
                     def _on_overlay_dismissed():
                         if not self.isVisible() or self._current_video_path != os.path.abspath(video_path):
                             return
