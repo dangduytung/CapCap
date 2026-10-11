@@ -271,7 +271,7 @@ class _PreviewAudioWorker(QObject):
                 try:
                     self._readers[p] = AudioReader(p, sample_rate=self.internal_sr)
                 except Exception as exc:
-                    print(f"[PreviewAudioWorker] Failed to open AudioReader for {p}: {exc}", file=sys.stderr)
+                    print(f"[AudioReader] ERROR opening {p}: {exc}", file=__import__('sys').stderr, flush=True)
                     self.errorOccurred.emit(f"Failed to open AudioReader for {p}: {exc}")
 
         self._tracks = new_tracks

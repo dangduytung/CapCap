@@ -3222,7 +3222,7 @@ class VideoTranslatorGUI(QMainWindow):
         self.persist_current_timeline_project_data()
         self._schedule_preview_audio_refresh(force=True)
 
-    def _schedule_preview_audio_refresh(self, *, force: bool = False):
+    def _schedule_preview_audio_refresh(self, *, force: bool = False, delay_ms: int | None = None):
         if getattr(self, "_preview_audio_track_switching", False):
             return
         timer = getattr(self, "_music_preview_refresh_timer", None)
@@ -3232,7 +3232,8 @@ class VideoTranslatorGUI(QMainWindow):
             timer.setInterval(120)
             timer.timeout.connect(lambda: self.sync_preview_audio_track_to_output(apply_to_player=True, force=True))
             self._music_preview_refresh_timer = timer
-        timer.start(0 if force else 120)
+        interval = delay_ms if delay_ms is not None else (0 if force else 120)
+        timer.start(interval)
 
     def _resolve_preview_voice_only_audio_path(self) -> str:
         if self.using_existing_audio_source():
@@ -3243,6 +3244,7 @@ class VideoTranslatorGUI(QMainWindow):
             getattr(self.current_project_state, "artifacts", {}).get("voice_vi", "") if getattr(self, "current_project_state", None) else "",
             self.get_project_temp_path("tts", "voice_vi.wav") if hasattr(self, "get_project_temp_path") else "",
         ]
+        resolved_path = ""
         for candidate in candidates:
             if not candidate:
                 continue
@@ -3250,36 +3252,45 @@ class VideoTranslatorGUI(QMainWindow):
             if normalized and os.path.exists(normalized):
                 self.last_voice_vi_path = normalized
                 self.processed_artifacts["voice_vi"] = normalized
-                return normalized
-        # Older projects may have persisted the generated WAV only on the
-        # TS1 DubSubtitle layers, without a top-level voice_vi artifact.  Use
-        # that canonical layer reference as a recovery path after reopening.
-        timeline = getattr(self, "timeline", None)
-        model = getattr(timeline, "_timeline", None) if timeline is not None else None
-        for track in getattr(model, "tracks", []) or [] if model is not None else []:
-            if str(getattr(track, "name", "")) not in ("TS1", "A2 Dub"):
-                continue
-            for layer in getattr(track, "layers", []) or []:
-                metadata = getattr(layer, "metadata", {}) or {}
-                for candidate in (
-                    getattr(layer, "audio_path", ""),
-                    metadata.get("audio_path", ""),
-                    metadata.get("_audio_path", ""),
-                ):
-                    normalized = self._normalize_local_file_path(candidate)
-                    if normalized and os.path.exists(normalized):
-                        return normalized
-        # Legacy releases sometimes stored only mixed_vi.  It is still a
-        # valid dubbed sidecar when there is no separate Music Layer.
-        if not self._music_audio_tracks():
+                resolved_path = normalized
+                break
+        if not resolved_path:
+            # Older projects may have persisted the generated WAV only on the
+            # TS1 DubSubtitle layers, without a top-level voice_vi artifact.  Use
+            # that canonical layer reference as a recovery path after reopening.
+            timeline = getattr(self, "timeline", None)
+            model = getattr(timeline, "_timeline", None) if timeline is not None else None
+            for track in getattr(model, "tracks", []) or [] if model is not None else []:
+                if str(getattr(track, "name", "")) not in ("TS1", "A2 Dub"):
+                    continue
+                for layer in getattr(track, "layers", []) or []:
+                    metadata = getattr(layer, "metadata", {}) or {}
+                    for candidate in (
+                        getattr(layer, "audio_path", ""),
+                        metadata.get("audio_path", ""),
+                        metadata.get("_audio_path", ""),
+                    ):
+                        normalized = self._normalize_local_file_path(candidate)
+                        if normalized and os.path.exists(normalized):
+                            resolved_path = normalized
+                            break
+                    if resolved_path:
+                        break
+                if resolved_path:
+                    break
+        if not resolved_path and not self._music_audio_tracks():
+            # Legacy releases sometimes stored only mixed_vi.  It is still a
+            # valid dubbed sidecar when there is no separate Music Layer.
             for candidate in (
                 self.processed_artifacts.get("mixed_vi"),
                 self.last_mixed_vi_path,
             ):
                 normalized = self._normalize_local_file_path(candidate)
                 if normalized and os.path.exists(normalized):
-                    return normalized
-        return ""
+                    resolved_path = normalized
+                    break
+        self.log(f"[AudioSync] _resolve_voice_path: candidates={[c for c in candidates if c]}, resolved={resolved_path or 'NONE'}")
+        return resolved_path
 
     def _resolve_preview_background_audio_path(self) -> str:
         # A Music Layer on the timeline is the only source that should be mixed with TTS.
@@ -3653,6 +3664,7 @@ class VideoTranslatorGUI(QMainWindow):
                         "is_original_video": True,
                     })
                 voice_only = self._resolve_preview_voice_only_audio_path()
+                self.log(f"[AudioSync] _apply: voice_only_path={voice_only!r}, exists={bool(voice_only and os.path.exists(voice_only))}")
                 if voice_only and os.path.exists(voice_only):
                     dub_vol = self._compute_audio_track_volume("TS1", base=100.0) * (10 ** (self._get_audio_track_gain_db("TS1") / 20.0))
                     tracks_snapshot.append({
