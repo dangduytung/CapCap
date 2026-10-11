@@ -3673,7 +3673,12 @@ class VideoTranslatorGUI(QMainWindow):
                     tracks_snapshot.append(m_copy)
 
                 warps = list(getattr(self, "video_time_warps", []) or [])
-                self.log(f"[AudioSync] set_audio_tracks_snapshot: {len(tracks_snapshot)} tracks={[t.get('id') for t in tracks_snapshot]}, dur_ms={self._audio_total_duration_ms()}")
+                fmt_track = lambda t: (
+                    t.get("id"),
+                    "muted" if t.get("muted") else (f"vol={t.get('volume'):.0f}" if isinstance(t.get("volume"), (int, float)) else f"vol={t.get('volume')}"),
+                    f"end={t.get('end', 0):.2f}s" if isinstance(t.get("end"), (int, float)) else f"end={t.get('end', 0)}s",
+                )
+                self.log(f"[AudioSync] set_audio_tracks_snapshot: {len(tracks_snapshot)} tracks={[fmt_track(t) for t in tracks_snapshot]}, dur_ms={self._audio_total_duration_ms()}")
                 self.media_player.set_audio_tracks_snapshot(tracks_snapshot, warps)
 
             if current_position > 0:
@@ -3714,7 +3719,11 @@ class VideoTranslatorGUI(QMainWindow):
         candidates: list[str] = []
         candidates.extend([
             self.processed_artifacts.get("extracted_audio"),
+            self.processed_artifacts.get("audio_extracted"),
             self.last_extracted_audio,
+            getattr(self.current_project_state, "artifacts", {}).get("extracted_audio", "") if getattr(self, "current_project_state", None) else "",
+            getattr(self.current_project_state, "artifacts", {}).get("audio_extracted", "") if getattr(self, "current_project_state", None) else "",
+            self.get_project_temp_path("source", "extracted_audio.wav") if hasattr(self, "get_project_temp_path") else "",
             self.audio_source_edit.text().strip() if hasattr(self, "audio_source_edit") else "",
         ])
         for candidate in candidates:
@@ -3722,6 +3731,9 @@ class VideoTranslatorGUI(QMainWindow):
                 continue
             normalized = self._normalize_local_file_path(candidate)
             if normalized and os.path.exists(normalized):
+                self.last_extracted_audio = normalized
+                self.processed_artifacts["extracted_audio"] = normalized
+                self.processed_artifacts["audio_extracted"] = normalized
                 return normalized
         # Final fallback: the source video file itself. mpv runs with
         # `ao=null` (video-only) and audio is routed through the A1

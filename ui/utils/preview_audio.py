@@ -197,11 +197,16 @@ class _PreviewAudioWorker(QObject):
                         reader.close()
                     except Exception:
                         pass
-                self._readers = {
-                    t["path"]: AudioReader(t["path"], sample_rate=self.internal_sr)
-                    for t in self._tracks
-                    if os.path.exists(t["path"])
-                }
+                readers = {}
+                for t in self._tracks:
+                    p = t["path"]
+                    if os.path.exists(p):
+                        try:
+                            readers[p] = AudioReader(p, sample_rate=self.internal_sr)
+                        except Exception as exc:
+                            print(f"[PreviewAudioWorker] Failed to reopen AudioReader for {p}: {exc}", file=sys.stderr)
+                            self.errorOccurred.emit(f"Failed to reopen AudioReader for {p}: {exc}")
+                self._readers = readers
 
             self._io_device = self._sink.start()
 
@@ -266,6 +271,7 @@ class _PreviewAudioWorker(QObject):
                 try:
                     self._readers[p] = AudioReader(p, sample_rate=self.internal_sr)
                 except Exception as exc:
+                    print(f"[PreviewAudioWorker] Failed to open AudioReader for {p}: {exc}", file=sys.stderr)
                     self.errorOccurred.emit(f"Failed to open AudioReader for {p}: {exc}")
 
         self._tracks = new_tracks
