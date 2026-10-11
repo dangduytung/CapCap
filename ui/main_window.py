@@ -7030,6 +7030,7 @@ class VideoTranslatorGUI(QMainWindow):
                     "attempt_count": int(translated.get("attempt_count", 0) or 0),
                     "action_taken": str(translated.get("action_taken", "")),
                     "voice_speed": float(reference.get("voice_speed", 1.0)),
+                    "_auto_fit_applied": bool(reference.get("_auto_fit_applied", False)),
                     "manual_highlights": list(translated.get("manual_highlights", [])),
                     "extended_duration": float(reference.get("extended_duration", 0.0) or 0.0),
                     "time_warp_id": str(reference.get("time_warp_id", "") or ""),
@@ -11752,7 +11753,7 @@ class VideoTranslatorGUI(QMainWindow):
                 speed_spin = ReliableDoubleSpinBox()
                 speed_spin.setRange(0.5, 3.0)
                 speed_spin.setSingleStep(0.1)
-                speed_spin.setDecimals(1)
+                speed_spin.setDecimals(2)
                 speed_spin.setValue(float(row.get("voice_speed", 1.0)))
                 speed_spin.setSuffix("x")
                 speed_spin.setFixedWidth(75 if (diarization_enabled and speaker_ids) else 85)
@@ -12052,7 +12053,8 @@ class VideoTranslatorGUI(QMainWindow):
             return
         for segments_list in (self.current_translated_segments, self.current_segments):
             if segments_list and 0 <= index < len(segments_list):
-                segments_list[index]["voice_speed"] = round(float(value), 1)
+                segments_list[index]["voice_speed"] = round(float(value), 2)
+                segments_list[index]["_auto_fit_applied"] = False
                 self._voiceover_force_refresh = True
         self.persist_current_timeline_project_data()
 
@@ -15676,7 +15678,7 @@ class VideoTranslatorGUI(QMainWindow):
         layout.addWidget(engine_combo)
 
         # OCR Backend combo (RapidOCR vs Windows Media OCR)
-        ocr_backend_label = QLabel(t("OCR Engine:"))
+        ocr_backend_label = QLabel(t("OCR Engine:"), content_widget)
         ocr_backend_label.setVisible(current_engine == "ocr")
         ocr_backend_combo = QComboBox(dialog)
         ocr_backend_combo.addItem("RapidOCR (Default)", "rapidocr")
@@ -15690,7 +15692,7 @@ class VideoTranslatorGUI(QMainWindow):
         layout.addWidget(ocr_backend_combo)
 
         # OCR note for Windows OCR
-        ocr_backend_note = QLabel()
+        ocr_backend_note = QLabel(content_widget)
         ocr_backend_note.setWordWrap(True)
         ocr_backend_note.setStyleSheet("color: #888888; font-size: 11px; margin-top: 2px; margin-bottom: 6px;")
 
@@ -15719,7 +15721,7 @@ class VideoTranslatorGUI(QMainWindow):
         layout.addWidget(ocr_backend_note)
 
         # OCR Region combo (only visible when OCR selected)
-        region_label = QLabel("Subtitle position:")
+        region_label = QLabel("Subtitle position:", content_widget)
         region_label.setVisible(current_engine == "ocr")
         region_combo = QComboBox(dialog)
         region_combo.addItem("Bottom (default)", "bottom")
@@ -15733,7 +15735,7 @@ class VideoTranslatorGUI(QMainWindow):
         layout.addWidget(region_label)
         layout.addWidget(region_combo)
 
-        sampling_label = QLabel("OCR sampling rate:")
+        sampling_label = QLabel("OCR sampling rate:", content_widget)
         sampling_label.setToolTip("Higher rates catch shorter subtitle flashes but process more video frames.")
         sampling_label.setVisible(current_engine == "ocr")
         sampling_combo = QComboBox(dialog)
@@ -15752,7 +15754,7 @@ class VideoTranslatorGUI(QMainWindow):
 
         # Whisper Section
         is_whisper = current_engine == "whisper"
-        whisper_title = QLabel("Whisper model")
+        whisper_title = QLabel("Whisper model", content_widget)
         whisper_title.setObjectName("statusHeadline")
         whisper_title.setVisible(is_whisper)
         layout.addWidget(whisper_title)
@@ -15847,13 +15849,13 @@ class VideoTranslatorGUI(QMainWindow):
         divider.setStyleSheet("color: #2f4868;")
         layout.addWidget(divider)
 
-        remote_title = QLabel("Remote API")
+        remote_title = QLabel("Remote API", content_widget)
         remote_title.setObjectName("statusHeadline")
         remote_title.setVisible(remote_mode)
         layout.addWidget(remote_title)
 
         remote_url_layout = QVBoxLayout()
-        remote_url_label = QLabel("PC API URL:")
+        remote_url_label = QLabel("PC API URL:", content_widget)
         remote_url_edit = QLineEdit(dialog)
         remote_url_edit.setText(os.getenv("CAPCAP_REMOTE_API_URL", "http://127.0.0.1:8765"))
         remote_url_layout.addWidget(remote_url_label)
@@ -15863,7 +15865,7 @@ class VideoTranslatorGUI(QMainWindow):
         layout.addLayout(remote_url_layout)
 
         remote_token_layout = QVBoxLayout()
-        remote_token_label = QLabel("API Token (optional):")
+        remote_token_label = QLabel("API Token (optional):", content_widget)
         remote_token_edit = QLineEdit(dialog)
         remote_token_edit.setEchoMode(QLineEdit.Password)
         remote_token_edit.setText(os.getenv("CAPCAP_REMOTE_API_TOKEN", ""))
@@ -15882,27 +15884,27 @@ class VideoTranslatorGUI(QMainWindow):
 
         remote_hint_label = QLabel(
             "Remote mode keeps Whisper and AI translation on your PC server. "
-            "This laptop build only sends extracted audio and subtitle segments over HTTP."
+            "This laptop build only sends extracted audio and subtitle segments over HTTP.", content_widget
         )
         remote_hint_label.setObjectName("helperLabel")
         remote_hint_label.setWordWrap(True)
         remote_hint_label.setVisible(remote_mode)
         layout.addWidget(remote_hint_label)
 
-        remote_divider = QFrame()
+        remote_divider = QFrame(content_widget)
         remote_divider.setFrameShape(QFrame.HLine)
         remote_divider.setStyleSheet("color: #2f4868;")
         remote_divider.setVisible(remote_mode)
         layout.addWidget(remote_divider)
 
         # AI Translation Section
-        ai_title = QLabel("AI Translation")
+        ai_title = QLabel("AI Translation", content_widget)
         ai_title.setObjectName("statusHeadline")
         ai_title.setVisible(not remote_mode)
         layout.addWidget(ai_title)
 
         provider_layout = QHBoxLayout()
-        provider_label = QLabel("Translator Provider:")
+        provider_label = QLabel("Translator Provider:", content_widget)
         provider_label.setVisible(not remote_mode)
         provider_layout.addWidget(provider_label)
         provider_combo = QComboBox(dialog)
@@ -15958,7 +15960,7 @@ class VideoTranslatorGUI(QMainWindow):
         layout.addWidget(key_section_widget)
 
         model_layout = QVBoxLayout()
-        model_label = QLabel("AI Model:")
+        model_label = QLabel("AI Model:", content_widget)
         model_edit = QLineEdit(dialog)
         model_edit.setText(initial_model)
         model_layout.addWidget(model_label)
@@ -15968,7 +15970,7 @@ class VideoTranslatorGUI(QMainWindow):
         layout.addLayout(model_layout)
 
         base_url_layout = QVBoxLayout()
-        base_url_label = QLabel("API URL:")
+        base_url_label = QLabel("API URL:", content_widget)
         base_url_edit = QLineEdit(dialog)
         base_url_edit.setText(initial_base_url)
         base_url_layout.addWidget(base_url_label)
@@ -16037,7 +16039,7 @@ class VideoTranslatorGUI(QMainWindow):
         )
         layout.addWidget(auto_context_cb)
 
-        provider_hint = QLabel("Get an API key at https://aistudio.google.com/apikey")
+        provider_hint = QLabel("Get an API key at https://aistudio.google.com/apikey", content_widget)
         provider_hint.setObjectName("helperLabel")
         provider_hint.setWordWrap(True)
         provider_hint.setVisible(not remote_mode)
@@ -16106,7 +16108,7 @@ class VideoTranslatorGUI(QMainWindow):
 
         test_btn = QPushButton(t("Test Connection"), dialog)
         test_btn.setVisible(not remote_mode)
-        test_status = QLabel("")
+        test_status = QLabel("", content_widget)
         test_status.setObjectName("helperLabel")
         test_status.setVisible(not remote_mode)
         test_row = QHBoxLayout()
@@ -16858,6 +16860,8 @@ class VideoTranslatorGUI(QMainWindow):
                     for item in group_items
                 ).strip(),
                 'speaker': str(group_items[0].get('speaker', '') or ''),
+                'voice_speed': group_items[0].get('voice_speed', 1.0),
+                '_auto_fit_applied': bool(group_items[0].get('_auto_fit_applied', False)),
             })
             idx = cursor
         return self._apply_speaker_voice_assignments(grouped_segments)
@@ -17105,11 +17109,13 @@ class VideoTranslatorGUI(QMainWindow):
                 old_speed = float(seg.get("voice_speed") or 1.0)
             except (TypeError, ValueError):
                 old_speed = 1.0
-            if abs(new_speed - old_speed) >= 0.05:
-                seg["voice_speed"] = round(new_speed, 1)
+            if abs(new_speed - old_speed) >= 0.0005:
+                seg["voice_speed"] = round(new_speed, 3)
                 updated = True
-            if next_payload.get("_auto_fit_applied"):
-                seg["_auto_fit_applied"] = True
+            auto_fit = bool(next_payload.get("_auto_fit_applied", False))
+            if bool(seg.get("_auto_fit_applied", False)) != auto_fit:
+                updated = True
+            seg["_auto_fit_applied"] = auto_fit
             # When group_id is present, multiple sub-segments share the same group_id.
             # Do NOT overwrite their individual start/end times with the entire group's start/end,
             # which would collapse them onto the same time slice!
@@ -18322,13 +18328,18 @@ class VideoTranslatorGUI(QMainWindow):
                 except Exception as exc:
                     print(f"[Preview] Deferred media load error: {exc}")
                 finally:
-                    def _on_overlay_dismissed():
+                    def _show_loaded_preview():
+                        if (
+                            getattr(self, "_project_loading_in_progress", False)
+                            or not self.isVisible()
+                            or self._current_video_path != os.path.abspath(video_path)
+                        ):
+                            return
                         if hasattr(self, "video_view") and hasattr(self.video_view, "video_surface") and self.video_view.video_surface is not None:
                             try:
                                 self.video_view.video_surface.show()
                             except Exception:
                                 pass
-                        self.hide_loading_overlay(fade=False)
                         if hasattr(self, "sync_live_subtitle_preview"):
                             self.sync_live_subtitle_preview()
                         if hasattr(self, "media_player") and not self.media_player.is_playing():
@@ -18336,6 +18347,12 @@ class VideoTranslatorGUI(QMainWindow):
                         self._timed_layer_preview_signature = None
                         if hasattr(self, "refresh_timed_layer_preview"):
                             self.refresh_timed_layer_preview()
+                    def _on_overlay_dismissed():
+                        if not self.isVisible() or self._current_video_path != os.path.abspath(video_path):
+                            return
+                        self.hide_loading_overlay(fade=False)
+                        # Let Qt repaint the editor before revealing MPV's native child window.
+                        QTimer.singleShot(100, _show_loaded_preview)
                     QTimer.singleShot(150, _on_overlay_dismissed)
 
             QTimer.singleShot(50, _deferred_load_media)

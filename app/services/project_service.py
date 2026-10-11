@@ -240,6 +240,9 @@ class ProjectService:
                     # the editor.  They must participate in this signature so
                     # an assignment change cannot reuse an old voice track.
                     "voice_name": str((seg or {}).get("voice_name") or "").strip(),
+                    "voice_speed": 1.0 if (seg or {}).get("_auto_fit_applied") else round(
+                        float((seg or {}).get("voice_speed", 1.0) or 1.0), 3
+                    ),
                 }
                 for seg in list(segments or [])
             ],

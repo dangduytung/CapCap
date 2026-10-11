@@ -842,6 +842,9 @@ class VoiceWorkflow:
         prepared = []
         for seg in list(segments or []):
             current = dict(seg or {})
+            # Automatic speed is a result of the previous WAV, not a manual request.
+            if current.pop("_auto_fit_applied", False):
+                current.pop("voice_speed", None)
             subtitle_text = (current.get("text") or "").strip()
             voice_edited = bool(current.get("voice_edited"))
             spoken_text = self._segment_tts_text(current)
@@ -994,6 +997,7 @@ class VoiceWorkflow:
         sync_mode: str,
     ):
         polished_wavs = list(wavs or [])
+        automatic_speeds = [1.0] * len(polished_wavs)
         for idx, (seg, wav_path) in enumerate(zip(list(segments or []), polished_wavs)):
             if not wav_path or not os.path.exists(wav_path):
                 continue
@@ -1039,6 +1043,7 @@ class VoiceWorkflow:
                             output_wav_path=adjusted_path,
                             speed_ratio=speed_ratio,
                         )
+                        automatic_speeds[idx] *= speed_ratio
                         seg["action_taken"] = "speed_light"
                         metrics = dict(seg.get("_tts_metrics") or {})
                         metrics["action_taken"] = "speed_light"
@@ -1060,6 +1065,7 @@ class VoiceWorkflow:
                         output_wav_path=adjusted_path,
                         speed_ratio=stubborn_speed,
                     )
+                    automatic_speeds[idx] *= stubborn_speed
                     seg["action_taken"] = "speed_stubborn"
                     metrics = dict(seg.get("_tts_metrics") or {})
                     metrics["action_taken"] = "speed_stubborn"
@@ -1080,6 +1086,7 @@ class VoiceWorkflow:
                         output_wav_path=adjusted_path,
                         speed_ratio=rescue_speed,
                     )
+                    automatic_speeds[idx] *= rescue_speed
                     seg["action_taken"] = "speed_rescue"
                     metrics = dict(seg.get("_tts_metrics") or {})
                     metrics["action_taken"] = "speed_rescue"
@@ -1096,6 +1103,7 @@ class VoiceWorkflow:
                         output_wav_path=adjusted_path,
                         speed_ratio=medium_speed,
                     )
+                    automatic_speeds[idx] *= medium_speed
                     seg["action_taken"] = "speed_balance"
                     metrics = dict(seg.get("_tts_metrics") or {})
                     metrics["action_taken"] = "speed_balance"
@@ -1117,9 +1125,9 @@ class VoiceWorkflow:
                             polished_wavs[idx] = fit_res
                             new_dur = self._probe_wav_duration_seconds(fit_res)
                             if new_dur > 0 and actual_duration > new_dur:
+                                automatic_speeds[idx] *= actual_duration / new_dur
                                 calc_speed = round(actual_duration / new_dur, 1)
                                 if calc_speed > 1.0:
-                                    seg["voice_speed"] = calc_speed
                                     seg["_auto_fit_applied"] = True
                                     seg["action_taken"] = "smart_fit"
 
@@ -1178,9 +1186,9 @@ class VoiceWorkflow:
                     )
                     new_dur = self._probe_wav_duration_seconds(synced_path)
                     if new_dur > 0 and actual_duration > new_dur:
+                        automatic_speeds[idx] *= actual_duration / new_dur
                         calc_speed = round(actual_duration / new_dur, 1)
                         if calc_speed > 1.0:
-                            seg["voice_speed"] = calc_speed
                             seg["_auto_fit_applied"] = True
                             seg["action_taken"] = (seg.get("action_taken") or "") + "+force_fit"
                         else:
@@ -1188,6 +1196,11 @@ class VoiceWorkflow:
                     else:
                         seg["action_taken"] = (seg.get("action_taken") or "") + "+force_fit"
                     seg["ratio"] = 1.0
+        # Publish after manual speed/Force Fit so the UI value is not applied twice.
+        for seg, speed in zip(segments or [], automatic_speeds):
+            if speed > 1.0:
+                seg["voice_speed"] = round(speed, 3)
+                seg["_auto_fit_applied"] = True
         return polished_wavs
 
     def _apply_deficit_timing_polish(self, *, segments, wavs, tmp_dir, sync_mode):

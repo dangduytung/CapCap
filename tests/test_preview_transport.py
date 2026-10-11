@@ -518,6 +518,33 @@ class TestPreviewTransport(unittest.TestCase):
         mock_engine.set_tracks.assert_called_once_with([])
         self.assertIsNone(backend._last_tracks_snapshot)
 
+    def test_native_playhead_updates_follow_60hz_slots_without_backlog(self):
+        from types import SimpleNamespace
+        from PySide6.QtMultimedia import QMediaPlayer
+        from ui.utils.media_backend import MpvMediaPlayerBackend
+
+        for step_ms in (10, 16, 20):
+            with self.subTest(step_ms=step_ms):
+                emitted = []
+                backend = SimpleNamespace(
+                    _native_audio_active=True, _state=QMediaPlayer.PlayingState,
+                    positionChanged=SimpleNamespace(emit=emitted.append),
+                )
+                with patch("ui.utils.media_backend.time.monotonic") as clock:
+                    for ms in range(0, 1000, step_ms):
+                        clock.return_value = 100 + ms / 1000
+                        MpvMediaPlayerBackend._on_native_audio_position_changed(backend, ms)
+                    self.assertGreaterEqual(len(emitted), 49 if step_ms == 20 else 59)
+                    self.assertLessEqual(len(emitted), 61)
+                    clock.return_value = 105.0
+                    MpvMediaPlayerBackend._on_native_audio_position_changed(backend, 5000)
+                    MpvMediaPlayerBackend._on_native_audio_position_changed(backend, 5001)
+                    self.assertEqual(emitted[-1], 5000)
+                    self.assertEqual(backend._position_ms, 5001)
+                    backend._state = QMediaPlayer.PausedState
+                    MpvMediaPlayerBackend._on_native_audio_position_changed(backend, 1234)
+                    self.assertEqual(emitted[-1], 1234)
+
     def test_on_native_audio_position_changed_emits_position_changed(self):
         """Verify _on_native_audio_position_changed updates position and emits positionChanged."""
         from ui.utils.media_backend import MpvMediaPlayerBackend

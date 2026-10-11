@@ -50,7 +50,7 @@ def build_advanced_group(gui, left_layout):
     gui.toggle_advanced_btn.toggled.connect(gui.on_advanced_toggled)
     gui.toggle_advanced_btn.hide()
 
-    gui.advanced_section_content = QWidget()
+    gui.advanced_section_content = QWidget(gui.advanced_section)
     gui.advanced_section_content.setVisible(True)
     section_layout.addWidget(gui.advanced_section_content)
 

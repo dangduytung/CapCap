@@ -1605,15 +1605,15 @@ class MpvVideoView(QWidget):
             _win = self.window()
             if _win:
                 _win.installEventFilter(self)
-        self.video_surface.show()
+        win = self.window()
+        is_loading = getattr(win, "_project_loading_in_progress", False)
+        self.video_surface.setVisible(not is_loading)
         self._sync_preview_stack()
         self._update_ratio_badge()
         self.reposition_subtitle()
         # Optional overlays may be restored before the native video surface
         # receives its final geometry. Reconnect their visible content now;
         # selection continues to control only edit chrome.
-        win = self.window()
-        is_loading = getattr(win, "_project_loading_in_progress", False)
         if not is_loading:
             if self.text_overlay is not None and self.text_overlay._items and not self.text_overlay._suppressed:
                 self.text_overlay.sync_to_view()

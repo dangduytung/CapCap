@@ -1,7 +1,7 @@
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 APP_DIR = os.path.join(PROJECT_ROOT, "app")
@@ -130,6 +130,60 @@ class TestMainWindowLoadingOverlay(unittest.TestCase):
 
         gui.show_loading_overlay.assert_called_once_with("test.mp4")
         gui.hide_loading_overlay.assert_called_once_with(fade=False)
+
+    def test_native_video_surface_stays_hidden_while_project_is_loading(self):
+        from widgets.mpv_video_view import MpvVideoView
+
+        self.parent._project_loading_in_progress = True
+        view = MpvVideoView(self.parent)
+        try:
+            view.video_surface.hide()
+            view.show()
+            self.assertFalse(view.video_surface.isVisible())
+            view.hide()
+            self.parent._project_loading_in_progress = False
+            view.show()
+            self.assertTrue(view.video_surface.isVisible())
+        finally:
+            view.hide()
+            view.deleteLater()
+
+    def test_preview_is_revealed_after_overlay_dismissal_and_skips_stale_callbacks(self):
+        gui = MagicMock(spec=VideoTranslatorGUI)
+        for name in ("video_path_edit", "transcript_text", "translated_text", "timeline", "media_player", "video_view"):
+            setattr(gui, name, MagicMock())
+        gui._loading_overlay = MagicMock(spec=MainWindowLoadingOverlay)
+        gui._media_backend_ready = True
+        gui.isVisible.return_value = True
+        gui.show_loading_overlay.side_effect = lambda path: VideoTranslatorGUI.show_loading_overlay(gui, path)
+        gui.hide_loading_overlay.side_effect = lambda **kw: VideoTranslatorGUI.hide_loading_overlay(gui, **kw)
+        callbacks = []
+        with patch("main_window.QTimer.singleShot", side_effect=lambda ms, cb: callbacks.append((ms, cb))), \
+                patch("views.launcher.LauncherWindow.add_recent"), \
+                patch("views.launcher._get_video_duration", return_value=10.0):
+            VideoTranslatorGUI.load_video_project(gui, "test.mp4")
+            _, load_media = callbacks.pop(0)
+            load_media()
+            gui.video_view.video_surface.show.assert_not_called()
+            _, dismiss_overlay = callbacks.pop(0)
+            dismiss_overlay()
+            gui._loading_overlay.dismiss.assert_called_once_with(fade=False)
+            gui.video_view.video_surface.show.assert_not_called()
+            delay_ms, reveal_preview = callbacks.pop(0)
+            self.assertEqual(delay_ms, 100)
+            reveal_preview()
+            gui.video_view.video_surface.show.assert_called_once()
+
+            gui.video_view.video_surface.show.reset_mock()
+            gui._project_loading_in_progress = True
+            reveal_preview()
+            gui._project_loading_in_progress = False
+            gui.isVisible.return_value = False
+            reveal_preview()
+            gui.isVisible.return_value = True
+            gui._current_video_path = os.path.abspath("another.mp4")
+            reveal_preview()
+            gui.video_view.video_surface.show.assert_not_called()
 
 
 if __name__ == "__main__":

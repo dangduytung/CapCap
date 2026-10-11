@@ -27,6 +27,9 @@ class Segment:
         final_text = str(data.get("final_text", data.get("text", "")) or "")
         tts_text = str(data.get("tts_text", "") or "")
         metadata = dict(data.get("metadata", {}) or {})
+        for key in ("voice_speed", "_auto_fit_applied"):
+            if key in data:
+                metadata[key] = data[key]
         # Editor and diarization workflows use a flat ``speaker`` field,
         # while persisted Segment artifacts keep supplemental data in
         # metadata. Preserve it in both directions.
@@ -148,6 +151,9 @@ class Segment:
         for key in ("tts_group_id", "tts_group_start", "tts_group_end"):
             if key in self.metadata:
                 payload[key] = self.metadata.get(key)
+        for key in ("voice_speed", "_auto_fit_applied"):
+            if key in self.metadata:
+                payload[key] = self.metadata[key]
         if self.metadata.get("words"):
             payload["words"] = list(self.metadata.get("words") or [])
         if self.metadata.get("manual_highlights"):

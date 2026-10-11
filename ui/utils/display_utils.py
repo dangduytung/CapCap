@@ -343,7 +343,8 @@ def set_windows_normal_geometry(widget, x: int, y: int, width: int, height: int)
             wp.rcNormalPosition.top = int(y)
             wp.rcNormalPosition.right = int(x + width)
             wp.rcNormalPosition.bottom = int(y + height)
-            wp.showCmd = 3  # SW_SHOWMAXIMIZED
+            if not widget.isVisible():
+                wp.showCmd = 0  # SW_HIDE: layout preparation must not show the window.
             return bool(ctypes.windll.user32.SetWindowPlacement(hwnd, ctypes.byref(wp)))
     except Exception:
         pass

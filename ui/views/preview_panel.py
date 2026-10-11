@@ -1459,7 +1459,7 @@ def build_preview_panel(gui):
     gui.import_translation_btn = QPushButton("Import SRT")
     gui.normalizer_dict_btn = QPushButton("Normalizer Dictionary")
     gui.normalizer_dict_btn.setToolTip("Project-specific Piper pronunciation dictionary")
-    gui.audio_inspector_regenerate_voice_btn = QPushButton("Regenerate voice")
+    gui.audio_inspector_regenerate_voice_btn = QPushButton("Regenerate voice", inspector_card)
     gui.audio_inspector_regenerate_voice_btn.setToolTip(
         t("Re-generate the dubbed voice for this segment and patch audio in-place")
     )

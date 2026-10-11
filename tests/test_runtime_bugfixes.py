@@ -2286,6 +2286,16 @@ class TestRuntimeBugfixes(unittest.TestCase):
         timeline.set_playhead(1.02)
         self.assertEqual(mock_viewport.update.call_count, 1)
 
+        # Repaint at the same integer boundary used by _draw_playhead.
+        timeline.pixels_per_second = 20.0
+        timeline.set_playhead(0.030)  # 0.6 px still draws at pixel 0.
+        mock_viewport.update.reset_mock()
+        timeline.set_playhead(0.060)  # 1.2 px now draws at pixel 1.
+        self.assertEqual(mock_viewport.update.call_count, 1)
+        mock_viewport.update.reset_mock()
+        timeline.set_playhead(0.090)  # 1.8 px still draws at pixel 1.
+        mock_viewport.update.assert_not_called()
+
     def test_media_backend_clock_sync_gated_by_warps(self):
         from unittest.mock import MagicMock
         from PySide6.QtMultimedia import QMediaPlayer

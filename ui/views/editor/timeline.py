@@ -572,7 +572,7 @@ class EditorTimeline(QGraphicsView):
         viewport = self.viewport()
         if viewport:
             scroll_x = self.horizontalScrollBar().value() if self.horizontalScrollBar() else 0
-            cur_px = self.CONTENT_LEFT_PAD + int(round(seconds * self.pixels_per_second)) - scroll_x
+            cur_px = self.CONTENT_LEFT_PAD + int(seconds * self.pixels_per_second) - scroll_x
             last_px = getattr(self, "_last_playhead_px", None)
             if not getattr(self, "_playing", False) or last_px is None or cur_px != last_px:
                 self._last_playhead_px = cur_px

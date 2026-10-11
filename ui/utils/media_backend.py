@@ -1165,12 +1165,11 @@ class MpvMediaPlayerBackend(QObject):
             else:
                 self._position_ms = pos_ms
 
-            # Throttle emission to UI during active playback to at most once every 25ms (40 FPS)
-            now = time.monotonic()
-            last_emit = getattr(self, "_last_audio_pos_emit_time", 0.0)
-            if getattr(self, "_state", None) == QMediaPlayer.PlayingState and (now - last_emit) < 0.025:
+            # Use 60 Hz slots so 10/16ms audio ticks do not halve the UI refresh rate.
+            frame = int(time.monotonic() * 60)
+            if getattr(self, "_state", None) == QMediaPlayer.PlayingState and frame == getattr(self, "_last_audio_pos_emit_frame", None):
                 return
-            self._last_audio_pos_emit_time = now
+            self._last_audio_pos_emit_frame = frame
             self.positionChanged.emit(self._position_ms)
 
     def close_native_audio(self):

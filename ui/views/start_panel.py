@@ -59,7 +59,7 @@ def _build_collapsible_section(title: str, start_expanded: bool = True):
     toggle_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
     toggle_btn.setStyleSheet("QToolButton { text-align: left; font-weight: 700; color: #8ad7ff; border: none; padding: 0; }")
 
-    content = QWidget()
+    content = QWidget(wrapper)
     content_layout = QVBoxLayout(content)
     content_layout.setContentsMargins(0, 0, 0, 0)
     content_layout.setSpacing(10)
