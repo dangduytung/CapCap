@@ -1747,8 +1747,15 @@ class MpvMediaPlayerBackend(QObject):
             threshold_ms = 300
             drift = abs(expected_a_pos_ms - a_pos)
             self.log(f"[AudioSync] _sync_audio_to_video: state={current_state}, v_paused={v_paused}, v_pos={v_pos_ms}, a_pos={a_pos}, drift={drift}, seek={'YES' if drift > threshold_ms else 'NO'}")
-            if current_state == QMediaPlayer.PlayingState and drift > threshold_ms:
+            if drift > threshold_ms:
+                # Correct large audio drift regardless of playback state.
+                # When MPV reaches end-of-file and pauses, the native audio engine
+                # continues advancing; we must seek it back and pause it to prevent
+                # runaway playback that leaves the engine beyond the clip end, which
+                # causes subsequent Play presses to start from past-end -> silence.
                 self._native_audio_engine.seek(expected_a_pos_ms)
+                if v_paused and current_state != QMediaPlayer.PlayingState:
+                    self._native_audio_engine.pause()
             return
 
         if self._original_loaded_path:
