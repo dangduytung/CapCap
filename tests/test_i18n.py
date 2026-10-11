@@ -4,7 +4,9 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QWindow
-from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QLineEdit, QPlainTextEdit, QWidget
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QWidget
 
 from ui import i18n
 
@@ -86,6 +88,27 @@ class I18nTests(unittest.TestCase):
     def test_localizer_accepts_non_widget_qt_windows(self):
         i18n.set_language("vi", MemorySettings())
         i18n.localize_widget_tree(QWindow())
+
+    def test_message_box_keeps_custom_button_identity_after_localization(self):
+        i18n.set_language("vi", MemorySettings())
+        for role in (QMessageBox.AcceptRole, QMessageBox.RejectRole):
+            with self.subTest(role=role):
+                box = QMessageBox()
+                box.setText(i18n.t("Subtitle Timeline Mismatch"))
+                import_button = box.addButton(i18n.t("Import Anyway"), QMessageBox.AcceptRole)
+                cancel_button = box.addButton(i18n.t("Cancel & Review"), QMessageBox.RejectRole)
+                box.setDefaultButton(cancel_button)
+
+                def click_choice():
+                    button = next(button for button in box.buttons() if box.buttonRole(button) == role)
+                    QTest.mouseClick(button, Qt.LeftButton)
+
+                QTimer.singleShot(0, click_choice)
+                box.exec()
+                expected_button = import_button if role == QMessageBox.AcceptRole else cancel_button
+                self.assertTrue(box.clickedButton() is expected_button)
+                self.assertTrue(box.defaultButton() is cancel_button)
+                box.deleteLater()
 
     def test_localizer_does_not_translate_ai_prompt_body(self):
         prompt = QPlainTextEdit()

@@ -26,6 +26,9 @@ def log_message(gui, message: str):
         try:
             stream.write(text + "\n")
             stream.flush()
+            # The runtime tee already forwards this line to the same window.
+            if getattr(getattr(stream, "_collector", None), "_window", None) is gui:
+                return
         except (AttributeError, OSError, ValueError):
             pass
     if hasattr(gui, "runtime_log_received"):

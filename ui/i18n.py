@@ -1454,8 +1454,10 @@ class _LanguageEventFilter:
         class _Filter(QObject):
             def eventFilter(self, obj, event):
                 from PySide6.QtCore import QEvent
+                from PySide6.QtWidgets import QDialogButtonBox
 
-                if event.type() in (QEvent.Show, QEvent.ShowToParent):
+                # Localizing a button box during its show event makes Qt replace its buttons.
+                if event.type() in (QEvent.Show, QEvent.ShowToParent) and not isinstance(obj, QDialogButtonBox):
                     localize_widget_tree(obj)
                 return False
 
