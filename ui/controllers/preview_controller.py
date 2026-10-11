@@ -1797,7 +1797,6 @@ class PreviewController:
         # MPV runs with ao=null (video-only). When setSource() loaded preview_path above,
         # it reset native_audio_engine's tracks to empty. Re-sync all active preview
         # audio tracks (A1 Audio, TS1, Music) with full gain/mute settings!
-        self.gui.log(f"[AudioSync] on_preview_ready syncing preview audio: native_active={getattr(getattr(self.gui, 'media_player', None), '_native_audio_active', 'N/A')}, voice={bool(getattr(self.gui, 'last_voice_vi_path', ''))}")
         self.gui.sync_preview_audio_track_to_output(apply_to_player=True, force=True)
         if hasattr(self.gui, "_schedule_preview_audio_refresh"):
             self.gui._schedule_preview_audio_refresh(force=True, delay_ms=150)
