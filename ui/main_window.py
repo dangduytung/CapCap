@@ -18278,6 +18278,17 @@ class VideoTranslatorGUI(QMainWindow):
             # 4. Resolve initial layout geometry while hidden so first paint is already settled
             self.prepare_initial_editor_layout()
 
+            # 4a. Pre-initialize media backend BEFORE showing the window.
+            # mpv.MPV() GPU context init blocks for 2-5 seconds on first run.
+            # By running it before show(), the user still sees the loading overlay
+            # while MPV initializes. Qt timers haven't fired yet so no freeze is visible.
+            try:
+                print(f"[Preview] Media backend pre-init starting (MPV GPU context)...")
+                self.ensure_media_backend_ready()
+                print(f"[Preview] Media backend ready")
+            except Exception as _be_err:
+                print(f"[Preview] Media backend pre-init error: {_be_err}")
+
             # 5. Show the complete editor UI cohesively as one window and paint immediately
             self.show()
             self.raise_()
@@ -18297,7 +18308,8 @@ class VideoTranslatorGUI(QMainWindow):
             # before MPV initializes and renders into the settled video canvas
             def _deferred_load_media():
                 try:
-                    self.ensure_media_backend_ready()
+                    if not getattr(self, '_media_backend_ready', False):
+                        self.ensure_media_backend_ready()
                     self.media_player.setSource(QUrl.fromLocalFile(video_path))
                     if hasattr(self, "refresh_video_dimensions"):
                         self.refresh_video_dimensions(video_path)
