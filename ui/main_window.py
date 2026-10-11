@@ -4194,6 +4194,8 @@ class VideoTranslatorGUI(QMainWindow):
             position = int(self.media_player.position() or 0)
             if os.path.abspath(current_source) != os.path.abspath(source_path):
                 self.media_player.setSource(QUrl.fromLocalFile(source_path))
+                # Changing video source clears the native preview audio tracks.
+                self.sync_preview_audio_track_to_output(apply_to_player=True, force=True)
                 if position > 0:
                     self.media_player.setPosition(position)
                 if was_playing:

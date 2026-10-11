@@ -27,6 +27,33 @@ from app.services.time_warp_service import TimeWarpService
 class TestPreviewTransport(unittest.TestCase):
     """Test transport synchronization, freeze mapping, and seek flags."""
 
+    def test_realtime_preview_restores_audio_after_switching_from_rendered_video(self):
+        from ui.main_window import VideoTranslatorGUI
+
+        for was_playing in (False, True):
+            with self.subTest(was_playing=was_playing):
+                gui = MagicMock()
+                gui.video_path_edit.text.return_value = "source.mp4"
+                gui.media_player._source_path = "rendered_preview.mp4"
+                gui.media_player.position.return_value = 1200
+                gui.media_player.is_playing.return_value = was_playing
+                active_tracks = ["A1 Audio", "TS1", "Music"]
+                gui.media_player.setSource.side_effect = lambda _: active_tracks.clear()
+                gui.sync_preview_audio_track_to_output.side_effect = (
+                    lambda **_: active_tracks.extend(["A1 Audio", "TS1", "Music"])
+                )
+                gui.media_player.play.side_effect = lambda: self.assertTrue(active_tracks)
+
+                with patch("ui.main_window.os.path.exists", return_value=True):
+                    self.assertTrue(VideoTranslatorGUI._apply_realtime_color_filter_preview(gui))
+
+                self.assertEqual(active_tracks, ["A1 Audio", "TS1", "Music"])
+                gui.sync_preview_audio_track_to_output.assert_called_once_with(
+                    apply_to_player=True, force=True
+                )
+                gui.media_player.setPosition.assert_called_once_with(1200)
+                self.assertEqual(gui.media_player.play.call_count, int(was_playing))
+
     def test_time_warp_freeze_mapping(self):
         """Verify timeline-to-media time mapping with freeze frame warps."""
         warps = [{"time": 2.0, "duration": 1.0}]
